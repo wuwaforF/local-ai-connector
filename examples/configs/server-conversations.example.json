@@ -1,0 +1,15 @@
+{
+  "conversations": {
+    "codex_desktop": {
+      "provider": "codex_ingress",
+      "session_id": "00000000-0000-0000-0000-000000000000",
+      "cwd": "/absolute/path/to/codex-ingress-workspace"
+    },
+    "gemini": {
+      "provider": "antigravity_sidecar",
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "workspace_uri": "file:///absolute/path/to/antigravity-workspace",
+      "socket": "/absolute/path/to/private-0700-directory/antigravity-native.sock"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+.connector/
+.codex/
+.zcode/
+
+.native-connector/
+
+# Maintainer-machine records: verification evidence, probe traces and generated
+# configs contain local paths and chat/session identifiers. Kept locally only.
+deployment/*.json
+deployment/*.jsonl
+deployment/*.plist
+docs/desktop-roundtrip-evidence.json
+docs/desktop-wait-evidence.json
+docs/zcode-generic-mcp-evidence.json
+docs/zcode-wakeup-attempt.json
+
+# Retired one-off experiments pinned to the maintainer's own chats and apps.
+deployment/codex-desktop-shared-server-experiment.command
+deployment/enable-codex-creation-hook-probe.command
+integrations/codex_desktop/live_probe.py
+tests/test_codex_desktop_live_probe.py

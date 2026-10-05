@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-ai-connector"
+version = "0.1.0"
+description = "Local, consent-bound conversations between existing desktop AI workers"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["mcp==2.2.0", "httpx>=0.28,<1", "starlette>=0.47,<2", "uvicorn>=0.35,<1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=1,<2"]
+
+[project.scripts]
+local-ai-connector = "local_ai_connector.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_ai_connector"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+

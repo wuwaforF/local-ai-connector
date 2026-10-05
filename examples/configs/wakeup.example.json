@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "send_when_unknown": true,
+  "bindings": {
+    "codex_desktop": {
+      "adapter": "command",
+      "command": [
+        "/absolute/path/to/local-ai-connector/.venv/bin/python",
+        "/absolute/path/to/local-ai-connector/integrations/codex_desktop/bridge.py"
+      ],
+      "target": {
+        "thread_id": "00000000-0000-0000-0000-000000000000",
+        "workspace": "/absolute/path/to/dedicated-codex-workspace"
+      },
+      "timeout": 30,
+      "restore": false
+    },
+    "gemini": {
+      "adapter": "socket",
+      "socket": "/absolute/path/to/private-0700-directory/antigravity.sock",
+      "target": {
+        "conversation_id": "00000000-0000-0000-0000-000000000000",
+        "project_id": "00000000-0000-0000-0000-000000000000",
+        "workspace_uri": "file:///absolute/path/to/antigravity-workspace"
+      },
+      "timeout": 25
+    },
+    "claude_code": {
+      "adapter": "command",
+      "command": [
+        "/absolute/path/to/local-ai-connector/.venv/bin/python",
+        "/absolute/path/to/local-ai-connector/integrations/claude_code/bridge.py",
+        "--session-record",
+        "/absolute/path/to/data/00000000-0000-0000-0000-000000000000.json"
+      ],
+      "target": {
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "workspace": "/absolute/path/to/claude-workspace"
+      },
+      "timeout": 30,
+      "restore": false
+    }
+  }
+}

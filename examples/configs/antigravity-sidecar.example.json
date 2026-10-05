@@ -1,0 +1,21 @@
+{
+  "command": "/absolute/path/to/local-ai-connector/.venv/bin/python",
+  "args": [
+    "-m",
+    "local_ai_connector.adapter_socket",
+    "--socket",
+    "/absolute/path/to/private-0700-directory/antigravity.sock",
+    "--timeout",
+    "25",
+    "--",
+    "/absolute/path/to/local-ai-connector/.venv/bin/python",
+    "/absolute/path/to/local-ai-connector/integrations/antigravity/bridge.py"
+  ],
+  "env": {
+    "PYTHONPATH": "/absolute/path/to/local-ai-connector/src",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "restart_policy": "on-failure",
+  "display_name": "Antigravity connector bridge",
+  "description": "Provides the host-specific wake adapter to the independent local connector service."
+}

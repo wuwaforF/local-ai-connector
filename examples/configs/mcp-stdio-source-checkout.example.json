@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "local_ai_connector": {
+      "command": "/absolute/path/to/local-ai-connector/.venv/bin/python",
+      "args": [
+        "-m",
+        "local_ai_connector.cli",
+        "mcp",
+        "--config",
+        "/absolute/path/to/data/gpt.json"
+      ],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/local-ai-connector/src",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  }
+}
