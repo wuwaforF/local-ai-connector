@@ -6,6 +6,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 PROBE_DIR = Path(__file__).resolve().parents[1] / "integrations/codex_desktop"
 sys.path.insert(0, str(PROBE_DIR))
 import probe as base_probe

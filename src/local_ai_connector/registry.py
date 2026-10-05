@@ -1,5 +1,4 @@
 """Owner-managed endpoint registration; credentials remain separate from public profiles."""
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -9,6 +8,8 @@ from contextlib import ExitStack
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from . import os_adapter
 
 
 MCP_LOCALES = ("zh-CN", "en-US")
@@ -38,15 +39,13 @@ def enable_chat_approval(data: Path, peers: list[str], *, mcp_locale: str = "en-
     if mcp_locale not in MCP_LOCALES:
         raise ValueError("mcp_locale must be zh-CN or en-US")
     with ExitStack() as locks:
-        lock = locks.enter_context((data / "server.lock").open("a"))
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            locks.enter_context(os_adapter.exclusive_lock(data / "server.lock"))
+        except os_adapter.LockBusy:
             raise ValueError("Stop the connector service before enabling chat approval")
         # A surviving stdio client can still pin its identity while the broker is stopped.
         for peer in sorted(peers):
-            endpoint_lock = locks.enter_context((data / f"{peer}.lock").open("a"))
-            fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
+            locks.enter_context(os_adapter.exclusive_lock(data / f"{peer}.lock", blocking=True))
         paths = [data / "server.json", *(data / f"{peer}.json" for peer in peers)]
         if any(path.is_symlink() or not path.is_file() for path in paths):
             raise ValueError("Configuration must exist as regular files, not symbolic links")
@@ -99,7 +98,7 @@ def enable_chat_approval(data: Path, peers: list[str], *, mcp_locale: str = "en-
         try:
             for path, value in updated.items():
                 content = json.dumps(value, ensure_ascii=False, indent=2).encode()
-                if json.loads(original[path]) == value and path.stat().st_mode & 0o777 == 0o600:
+                if json.loads(original[path]) == value and os_adapter.is_private(path):
                     continue
                 staged[path] = _stage_private(path, content)
                 backups[path] = _stage_private(path, original[path])
@@ -144,10 +143,10 @@ def add_peer(data: Path, peer: str, profile: dict, identity: dict | None = None,
         validate_identity(identity)
     # Registration changes multiple startup files. Serialize with the service owner so
     # no running server can observe half a registration or keep stale authentication.
-    with (data / "server.lock").open("a") as lock:
+    with ExitStack() as held:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            held.enter_context(os_adapter.exclusive_lock(data / "server.lock"))
+        except os_adapter.LockBusy:
             raise ValueError("Stop the connector service before registering an endpoint")
         config_path = data / "server.json"
         config = json.loads(config_path.read_text())

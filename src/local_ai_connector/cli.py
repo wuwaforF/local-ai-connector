@@ -11,10 +11,9 @@ from .registry import MCP_LOCALES
 
 
 def save_private(path: Path, value):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd,"w") as file:
-        json.dump(value,file,ensure_ascii=False,indent=2)
+    from . import os_adapter
+    os_adapter.ensure_private_dir(path.parent)
+    os_adapter.create_private_file(path, json.dumps(value, ensure_ascii=False, indent=2).encode())
 
 
 def peer_name(value):
@@ -50,6 +49,23 @@ def main():
                      help="启用本机聊天内 Claude 会话只读核对；不登记或修改绑定")
     mcp.add_argument('--codex-quick-binding', action='store_true',
                      help='启用 Codex 保存协作目标及按任务快速绑定候选；服务须另行配置元数据接口')
+    mcp.add_argument("--start-service", action="store_true",
+                     help="start this installation's service if it is not running")
+    install = sub.add_parser("setup", help="install or update the connector for one desktop host (idempotent)")
+    install.add_argument("host", choices=["codex", "claude", "antigravity"])
+    install.add_argument("--profile", default="default", help="separate installation name (default: default)")
+    install.add_argument("--dry-run", action="store_true", help="report what would change without writing")
+    install.add_argument("--no-start", action="store_true", help="do not start the service now")
+    remove = sub.add_parser("uninstall", help="remove host entries this installation created")
+    remove.add_argument("--profile", default="default")
+    remove.add_argument("--host", action="append", choices=["codex", "claude", "antigravity"])
+    remove.add_argument("--purge", action="store_true", help="also delete this installation's data directory")
+    remove.add_argument("--dry-run", action="store_true")
+    check = sub.add_parser("doctor", help="check readiness of an installation")
+    check.add_argument("--profile", default="default")
+    check.add_argument("--host", choices=["codex", "claude", "antigravity"])
+    unbind = sub.add_parser("unbind", help="remove the bound chat of a worker endpoint (owner)")
+    unbind.add_argument("endpoint", type=peer_name)
     admin = sub.add_parser("approve",help="显示原始求助并批准或拒绝")
     admin.add_argument("channel",nargs="?")
     revoke = sub.add_parser("revoke")
@@ -78,6 +94,24 @@ def main():
     write.add_argument("path")
     args = parser.parse_args()
     data = args.data.resolve()
+    if args.command in ("setup", "uninstall", "doctor"):
+        from .hosts import HostConfigError
+        from .install import InstallError, doctor, setup, uninstall
+        from .service import ServiceError
+        try:
+            if args.command == "setup":
+                report = setup(args.host, profile=args.profile, dry_run=args.dry_run, start_service=not args.no_start)
+            elif args.command == "uninstall":
+                report = uninstall(profile=args.profile, hosts=args.host, purge=args.purge, dry_run=args.dry_run)
+            else:
+                report = doctor(profile=args.profile, host=args.host)
+        except (InstallError, HostConfigError, ServiceError) as exc:
+            print(json.dumps({"error": exc.code, "message": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if args.command == "doctor" and not report["ready"]:
+            sys.exit(1)
+        return
     if args.command == "init":
         if not 1024<=args.port<=65535 or len(args.peers)<2 or len(set(args.peers))!=len(args.peers):
             parser.error("端口或端点名称无效")
@@ -122,22 +156,38 @@ def main():
                   "StandardOutPath": str(data / "service.log"), "StandardErrorPath": str(data / "service-error.log")}
         print(plistlib.dumps(config).decode(), end="")
     elif args.command == "serve":
-        import fcntl
         import uvicorn
+        from . import os_adapter
         from .server import create_app
+        from contextlib import ExitStack
         # Serialize service ownership before opening SQLite; never split waiters across processes.
-        with (data/"server.lock").open("a") as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        with ExitStack() as owned:
+            try:
+                owned.enter_context(os_adapter.exclusive_lock(data/"server.lock"))
+            except os_adapter.LockBusy:
+                parser.error("another connector service already owns this data directory")
             os.umask(0o077)
             config=json.loads((data/"server.json").read_text())
             print(f"本地连接器：{config['url']}，按 Ctrl-C 停止",flush=True)
-            uvicorn.run(create_app(data),host="127.0.0.1",port=config["port"],access_log=False,timeout_graceful_shutdown=5)
+            app = create_app(data)
+            server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=config["port"], access_log=False,
+                                                   timeout_graceful_shutdown=5))
+            # A portable owner-initiated stop (POST /admin shutdown); signals differ across platforms.
+            app.state.request_exit = lambda: setattr(server, "should_exit", True)
+            server.run()
     elif args.command == "mcp":
         from .mcp_server import serve
         if args.claude_binding_root is not None and args.config.is_symlink():
             parser.error("会话核对须使用当前用户的普通端点配置文件")
+        if args.start_service:
+            from .service import ServiceError, ensure_for_endpoint
+            try:
+                ensure_for_endpoint(args.config.resolve())
+            except ServiceError as exc:
+                # Keep serving MCP: tool calls then report the unavailable service to the chat.
+                print(f"local-ai-connector: {exc.code}: {exc}", file=sys.stderr, flush=True)
         serve(args.config.resolve(), claude_binding_root=args.claude_binding_root,
-              codex_quick_binding=args.codex_quick_binding)
+              codex_quick_binding=args.codex_quick_binding, start_service=args.start_service)
     elif args.command == "wakeup-status":
         if not (data/"wakeup.sqlite3").is_file():
             parser.error("未找到唤醒派发记录；唤醒适配器默认关闭")
@@ -224,6 +274,13 @@ def main():
         import httpx
         config=json.loads((data/"server.json").read_text())
         with httpx.Client(base_url=config["url"],headers={"Authorization":"Bearer "+config["admin_token"]},trust_env=False,timeout=10) as http:
+            if args.command == "unbind":
+                r=http.post("/admin",json={"action":"unbind","endpoint":args.endpoint})
+                if r.is_error:
+                    print(r.text, file=sys.stderr)
+                    sys.exit(1)
+                print(json.dumps(r.json(),ensure_ascii=False,indent=2))
+                return
             if args.command == "revoke":
                 r=http.post("/admin",json={"action":"revoke","channel":args.channel})
                 r.raise_for_status()

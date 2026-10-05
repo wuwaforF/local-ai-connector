@@ -13,6 +13,8 @@ from test_claude_guided_binding import isolated
 from test_claude_onboarding import open_inbox, world
 from test_claude_desktop_binding import _bind_selected_to_existing_record
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 
 def _dump(result):
     return json.loads(result.content[0].text)

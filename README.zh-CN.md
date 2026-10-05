@@ -310,7 +310,6 @@ deployment/migrate-codex-communication-permissions.command --worker-project /abs
 - `integrations/` 与 `deployment/` 的辅助脚本写死了端点名、数据目录和 LaunchAgent 标签，并从源码目录的 `.venv` 运行，尚未打包为可安装命令。
 - 宿主集成依赖 Codex Desktop、Antigravity、Claude Desktop 的非公开接口，宿主升级后可能失效，需要按版本的兼容性测试。
 - CLI 输出与控制窗口目前为中文；MCP 工具说明可用 `--mcp-locale en-US` 切换英文。
-- 唤醒派发在默认设置下最多多等约 3 秒（`settle_seconds` 到期后要等下一次 5 秒轮询），适合作为第一个改进项。
 - Codex Desktop 冷启动自动恢复的真人验收、重新登录后 LaunchAgent 自动加载仍未完成。
 - `docs/` 中带日期的实验记录为中文，欢迎整理和翻译。
 

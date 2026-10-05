@@ -8,6 +8,8 @@ from test_claude_onboarding import open_inbox, world
 from integrations.claude_code import desktop_binding, guided_binding, onboarding
 from local_ai_connector import claude_binding as bridge
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 
 def test_catalog_is_read_only_and_exposes_only_desktop_choice_fields(world, tmp_path, monkeypatch):
     setup = isolated(world, tmp_path, monkeypatch)

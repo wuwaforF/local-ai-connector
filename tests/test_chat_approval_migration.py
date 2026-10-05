@@ -10,6 +10,8 @@ import pytest
 from local_ai_connector.cli import main
 from local_ai_connector.registry import enable_chat_approval
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 
 @pytest.fixture
 def configured(tmp_path, monkeypatch):

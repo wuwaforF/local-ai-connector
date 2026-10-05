@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

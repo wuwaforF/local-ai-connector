@@ -8,6 +8,8 @@ from uuid import UUID
 
 import pytest
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 
 PROBE_PATH = Path(__file__).resolve().parents[1] / "integrations/codex_desktop/probe.py"
 spec = importlib.util.spec_from_file_location("codex_desktop_probe", PROBE_PATH)

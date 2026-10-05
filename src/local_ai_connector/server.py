@@ -20,7 +20,8 @@ from .mcp_server import create_mcp
 class Operation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     action: Literal["open", "archive_open", "send", "receive", "finish", "status", "result", "continue", "round_result",
-                    "workflow_start", "workflow_status", "workflow_resume", "workflow_cancel", "codex_binding_catalog", "codex_bound_chat"]
+                    "workflow_start", "workflow_status", "workflow_resume", "workflow_cancel", "codex_binding_catalog", "codex_bound_chat",
+                    "bind_request", "unbind", "enroll"]
     channel: str | None = None
     target: str = ""
     body: str = Field(default="", max_length=16000)
@@ -42,6 +43,13 @@ class Operation(BaseModel):
     selected_conversation: dict | None = None
     binding_only: bool = False
     cursor: str | None = Field(default=None, max_length=4096)
+    # Set by the stdio adapter from host-supplied metadata or environment, never from tool arguments.
+    session: str | None = Field(default=None, max_length=300)
+    label: str = Field(default="", max_length=80)
+    expected_revision: int | None = Field(default=None, ge=0)
+    expected_label: str | None = Field(default=None, max_length=80)
+    require_target: bool = False
+    secret: str | None = Field(default=None, max_length=512)
 
 
 class MCPAuthMiddleware:
@@ -104,9 +112,12 @@ def create_app(data: Path):
     generic_peers = set()
     for peer in config["peers"]:
         path = data / f"{peer}.json"
-        client = json.loads(path.read_text()).get("client", "generic")
-        if client == "generic":
+        endpoint = json.loads(path.read_text())
+        if endpoint.get("client", "generic") == "generic":
             generic_peers.add(peer)
+        if endpoint.get("chat_identity") is not None:
+            # Tasks to this endpoint are routed to its bound chat, identified by the host.
+            broker.bindings.bindable.add(peer)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -120,9 +131,14 @@ def create_app(data: Path):
                 from .wakeup import start
                 wakeup = app.state.wakeup = start(data, broker, set(config["peers"]))
             if any(entry["provider"] == "antigravity_sidecar" for entry in conversations.values()):
-                from .native_host import NativeHost
-                native = app.state.native_host = NativeHost(broker)
-                native_task = asyncio.create_task(native.run())
+                from . import os_adapter
+                if os_adapter.supports("unix_socket_bridge"):
+                    from .native_host import NativeHost
+                    native = app.state.native_host = NativeHost(broker)
+                    native_task = asyncio.create_task(native.run())
+                else:
+                    broker.record_incident("server", "native_host_unsupported",
+                                           "Native conversation bridge needs Unix sockets, unsupported on this platform")
             async with mcp_app.router.lifespan_context(mcp_app):
                 yield
         finally:
@@ -197,22 +213,30 @@ def create_app(data: Path):
             return await broker.workflows.cancel(peer, op.workflow_id, op.expected_version)
         elif op.action == "open":
             return await broker.open(peer,op.target,op.body,op.key,op.ttl_seconds,op.idle_seconds,op.conversation_mode,
-                                     selected_conversation=op.selected_conversation, binding_only=op.binding_only)
+                                     selected_conversation=op.selected_conversation, binding_only=op.binding_only,
+                                     expected_revision=op.expected_revision, expected_label=op.expected_label,
+                                     require_target=op.require_target)
         elif op.action == "archive_open":
             return await broker.archive_open(peer, op.channel, op.conversation_id, op.key)
         elif op.action == "continue":
             return await broker.continue_channel(peer, op.channel, op.body, op.key)
         elif op.action == "send":
-            return await broker.send(peer,op.channel,op.kind,op.body,op.key,op.reply_to)
+            return await broker.send(peer,op.channel,op.kind,op.body,op.key,op.reply_to,session=op.session)
         elif op.action == "receive":
-            return await broker.receive(peer,op.channel,op.after,op.timeout)
+            return await broker.receive(peer,op.channel,op.after,op.timeout,session=op.session)
+        elif op.action == "bind_request":
+            return await broker.request_binding(peer, op.session, op.label, op.key)
+        elif op.action == "unbind":
+            return await broker.unbind(peer, op.session)
+        elif op.action == "enroll":
+            return broker.enroll(peer, op.session, op.secret)
         elif op.action == "finish":
             return await broker.finish(peer,op.channel)
         elif op.action == "result":
             return broker.delegation_result(peer, op.channel)
         elif op.action == "round_result":
             return broker.round_result(peer, op.channel, op.question_id)
-        return broker.snapshot(peer)
+        return broker.snapshot(peer, op.session)
 
     async def invoke(ctx, **payload):
         peer = ctx.request_context.request.state.peer
@@ -257,6 +281,15 @@ def create_app(data: Path):
         if req.method == "GET":
             return JSONResponse(broker.snapshot())
         op = await body(req)
+        if isinstance(op, dict) and op.get("action") == "shutdown" and set(op) == {"action"}:
+            # Owner-initiated stop (uninstall); the server exits after this response.
+            request_exit = getattr(app.state, "request_exit", None)
+            if request_exit is None:
+                raise ConnectorError("unsupported", "This service was not started with an exit hook")
+            asyncio.get_running_loop().call_later(0.1, request_exit)
+            return JSONResponse({"state": "stopping"})
+        if isinstance(op, dict) and op.get("action") == "unbind" and set(op) == {"action", "endpoint"}:
+            return JSONResponse(await broker.unbind(str(op["endpoint"]), admin=True))
         if not isinstance(op,dict) or set(op)!={"action","channel"} or op["action"] not in ("approve","deny","revoke") or not isinstance(op["channel"],str):
             raise ConnectorError("invalid_request", "管理操作参数无效")
         if op["action"] == "revoke":
@@ -269,6 +302,13 @@ def create_app(data: Path):
         peer = auth(req, approval=True)
         req.state.peer = peer
         op = await body(req)
+        if isinstance(op, dict) and "binding_request" in op:
+            if (set(op) != {"binding_request", "decision", "source", "session"} or not isinstance(op["binding_request"], str)
+                    or op["decision"] not in ("accept", "decline", "cancel")
+                    or op["source"] not in ("host_elicitation", "host_tool_permission")):
+                raise ConnectorError("invalid_request", "A binding decision needs binding_request, decision, source and session")
+            return JSONResponse(await broker.decide_binding(peer, op["session"], op["binding_request"],
+                                                            op["decision"], op["source"]))
         if (not isinstance(op, dict) or set(op) not in ({"channel", "decision"}, {"channel", "decision", "source"}) or
                 not isinstance(op["channel"], str) or
                 op["decision"] not in ("accept", "decline", "cancel") or

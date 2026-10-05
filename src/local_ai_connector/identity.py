@@ -1,9 +1,9 @@
-import fcntl
 import json
 import os
 from pathlib import Path
 import tempfile
 
+from . import os_adapter
 from .core import ConnectorError, require
 
 
@@ -42,8 +42,7 @@ def caller_session(client: str, meta: dict, identity: dict | None = None):
 
 def bind_session(config_path: Path, session: str):
     """Pin a peer to its first native caller; models cannot choose this tool-external identity."""
-    with config_path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX)
+    with os_adapter.exclusive_lock(config_path.with_suffix(".lock"), blocking=True):
         config=json.loads(config_path.read_text())
         current=config.get("bound_session")
         require(current is None or current==session,"session_conflict","此端点已绑定另一桌面任务。请为新的任务对创建独立连接器配置。")

@@ -7,6 +7,8 @@ import struct
 
 import pytest
 
+pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
+
 
 MODULE = Path(__file__).resolve().parents[1] / 'integrations/claude_code/native_preflight.py'
 spec = importlib.util.spec_from_file_location('claude_native_preflight', MODULE)

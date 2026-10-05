@@ -103,13 +103,49 @@ CLAUDE_BINDING_INSTRUCTIONS = (
 )
 
 
-def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=False):
+CHAT_BINDING_INSTRUCTIONS = (
+    " The host identifies each chat; you never supply chat IDs. When the user asks to use a chat for connector "
+    "tasks, call connector_bind_this_chat from that chat. A binding grants no task permission. When delegating "
+    "to a worker whose connector_status entry has a binding, pass its label as target_chat and its revision as "
+    "binding_revision. If the binding changed, read connector_status again and confirm the target with the user. "
+    "Tasks already approved stay on the chat they were approved for."
+)
+
+
+def chat_identity_reader(spec):
+    """Host-supplied identity of the calling chat for an endpoint shared by all of a host's chats.
+
+    Codex sends the thread in each tool call's metadata; Claude Code gives each chat its own MCP
+    process with the session in its environment. Model tool arguments can never set it.
+    """
+    if spec is None:
+        return None
+    import os
+    from .bindings import valid_session
+    if spec == {"source": "codex_meta"}:
+        def read(ctx):
+            turn = (ctx.request_context.meta or {}).get("x-codex-turn-metadata")
+            thread = turn.get("thread_id") if isinstance(turn, dict) else None
+            session = f"codex:{thread}" if isinstance(thread, str) else None
+            return session if valid_session(session) else None
+        return read
+    if isinstance(spec, dict) and spec.get("source") == "env" and set(spec) == {"source", "variable", "namespace"}:
+        value = os.environ.get(spec["variable"])
+        session = f"{spec['namespace']}:{value}" if value else None
+        session = session if valid_session(session) else None
+        return lambda ctx: session
+    raise ValueError("chat_identity must be codex_meta or an environment variable mapping")
+
+
+def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=False, start_service=False):
     binding_catalog = binding_inspect = binding_guide = None
     if claude_binding_root is not None:
         import asyncio
         import os
         import stat
-        from . import claude_binding
+        from . import claude_binding, os_adapter
+        if os_adapter.NAME != "posix":
+            raise ValueError('Claude session inspection reads macOS Desktop metadata and is unsupported here')
         info = config_file.lstat()
         if (not claude_binding_root.is_absolute() or not stat.S_ISREG(info.st_mode)
                 or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
@@ -133,7 +169,12 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
         async def binding_inspect(desktop_id, expected_revision):
             return await asyncio.to_thread(claude_binding.inspect, claude_binding_root, data, home,
                                            desktop_id, expected_revision)
-    client = Client(config_file)
+    restart = None
+    if start_service:
+        from .service import ensure_for_endpoint
+        restart = lambda: ensure_for_endpoint(config_file)
+    client = Client(config_file, restart=restart)
+    read_chat = chat_identity_reader(client.config.get("chat_identity"))
     @asynccontextmanager
     async def lifespan(server):
         try:
@@ -142,6 +183,8 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
             await client.close()
 
     async def invoke(ctx, **payload):
+        if read_chat is not None:
+            return await client.call(**payload, session=read_chat(ctx))
         meta=ctx.request_context.meta
         session=caller_session(client.config.get("client","generic"),meta or {}, client.config.get("identity"))
         if session is not None:
@@ -150,6 +193,10 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
 
     async def decide(ctx, channel, decision):
         return await client.decide(channel, decision, source=(
+            "host_tool_permission" if approval_transport == "host_tool_permission" else "host_elicitation"))
+
+    async def decide_binding(ctx, request_id, decision):
+        return await client.decide_binding(request_id, decision, read_chat(ctx), source=(
             "host_tool_permission" if approval_transport == "host_tool_permission" else "host_elicitation"))
 
     profile = client.config.get("tool_profile", "peer")
@@ -164,11 +211,12 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
                approval_transport=approval_transport,
                mcp_locale=client.config.get("mcp_locale", "zh-CN"),
                binding_catalog=binding_catalog, binding_inspect=binding_inspect,
-               binding_guide=binding_guide, codex_quick_binding=codex_quick_binding).run(transport="stdio")
+               binding_guide=binding_guide, codex_quick_binding=codex_quick_binding,
+               chat_binding=decide_binding if delegating and read_chat is not None else None).run(transport="stdio")
 
 
 def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_locale="zh-CN", approval_transport="elicitation",
-               binding_catalog=None, binding_inspect=None, binding_guide=None, codex_quick_binding=False):
+               binding_catalog=None, binding_inspect=None, binding_guide=None, codex_quick_binding=False, chat_binding=None):
     if (binding_catalog is None) != (binding_inspect is None):
         raise ValueError('Configure both local binding inspection callbacks together')
     if binding_guide is not None and binding_catalog is None:
@@ -271,6 +319,8 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                          'the trusted ingress and credentials. If host_tool_permission is configured, quick_bind '
                          'returns a channel immediately: receive/send/finish on that channel; never repeat it to wait. '
                          'A native send receipt proves submission only. Native host acceptance remains pending.')
+    if chat_binding is not None:
+        instructions += CHAT_BINDING_INSTRUCTIONS
     if binding_guide is not None:
         instructions += (
             " Before executing a binding script, read the listed MCP resource connector://claude-binding-guide "
@@ -444,16 +494,19 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                   annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True))
         async def connector_delegate(ctx: Context, target: str, message: str, request_key: str,
                                      conversation_mode: Literal["existing", "new"], timeout_seconds: int = 180,
-                                     reply_to: str | None = None, reply: str | None = None) -> dict | InputRequiredResult:
+                                     reply_to: str | None = None, reply: str | None = None,
+                                     target_chat: str | None = None, binding_revision: int | None = None) -> dict | InputRequiredResult:
             """委派任务给另一个模型或工作者，如使用外部子代理。target 来自 connector_status；message 是完整任务原文。工具在当前聊天请求用户确认，批准后自动等待真实结果并结束交流。执行等待为 1–600 秒，不含用户确认时间。重试复用 request_key、target 和 message；running 时继续本工具等待。input_required 时同时提供 reply_to（questions 中的问题 id）和 reply（补充回复），继续原任务；补充回复重试也须保持原文。completed 的 answer.body 是工作者原文。"""
             from .delegation import delegate
             try:
                 if host_permission:
                     from .delegation import delegate_with_host_permission
                     return await delegate_with_host_permission(ctx, invoke, decision, target, message, request_key,
-                                                              reply_to=reply_to, reply=reply, conversation_mode=conversation_mode)
+                                                              reply_to=reply_to, reply=reply, conversation_mode=conversation_mode,
+                                                              target_chat=target_chat, binding_revision=binding_revision)
                 return await delegate(ctx, invoke, decision, target, message, request_key, timeout_seconds,
-                                      reply_to=reply_to, reply=reply, mcp_locale=mcp_locale, conversation_mode=conversation_mode)
+                                      reply_to=reply_to, reply=reply, mcp_locale=mcp_locale, conversation_mode=conversation_mode,
+                                      target_chat=target_chat, binding_revision=binding_revision)
             except ConnectorError as exc:
                 raise ToolError(f"{exc.code}: {exc}") from exc
             except httpx.RequestError as exc:
@@ -461,6 +514,27 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                            "to avoid duplicating the task." if english else
                            "transport_error: 连接暂时不可用，复用同一 request_key 恢复任务，避免重复委派")
                 raise ToolError(message) from exc
+    if chat_binding is not None:
+        @mcp.tool(description=(
+            "Bind THIS chat as the chat that receives this host's connector tasks, when the user asks (for example "
+            "'use this chat for connector tasks'). The host identifies the chat; give it a short label. Requires the "
+            "user's approval here. A binding grants no task permission: each task is still approved in the initiating "
+            "desktop, and tasks already approved stay on the chat they were approved for. Reuse request_key on retries."),
+            meta={"anthropic/requiresUserInteraction": True} if host_permission else None,
+            annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
+        async def connector_bind_this_chat(ctx: Context, label: str, request_key: str) -> dict | InputRequiredResult:
+            from .delegation import bind_this_chat
+            try:
+                return await bind_this_chat(ctx, invoke, chat_binding, label, request_key, host_permission=host_permission)
+            except ConnectorError as exc:
+                raise ToolError(f"{exc.code}: {exc}") from exc
+
+        @mcp.tool(description=("Remove this chat's binding so it no longer receives new connector tasks. Only the bound "
+                               "chat can do this. Tasks already approved stay pinned to it until they end."),
+                  annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+        async def connector_unbind_this_chat(ctx: Context) -> dict:
+            return await call(ctx, action="unbind")
+
     @mcp.tool(description=descriptions.get("connector_continue"),
               annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True))
     async def connector_continue(ctx: Context, channel: str, message: str, request_key: str,

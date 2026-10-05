@@ -8,6 +8,8 @@ from local_ai_connector.core import Broker, ConnectorError
 from local_ai_connector.native_host import NativeHost
 from local_ai_connector.wakeup import AdapterError, Binding, Dispatcher, WakeStore
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 PROJECT = '11111111-1111-4111-8111-111111111111'
 REGISTRATION = {'provider': 'antigravity_sidecar', 'project_id': PROJECT,
                 'workspace_uri': 'file:///test', 'socket': '/tmp/test-native.sock'}

@@ -2,19 +2,26 @@ name: tests
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the older run.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   pytest:
-    # The connector relies on Unix file locks and macOS host integrations.
-    runs-on: macos-latest
+    name: pytest (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Standard runners only. macOS runs the full suite; tests/conftest.py skips tests marked
+        # `macos` elsewhere and tests marked `posix` on Windows.
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7

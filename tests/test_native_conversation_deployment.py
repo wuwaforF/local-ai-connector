@@ -10,6 +10,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
+
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("conversation_deployment", ROOT / "integrations/codex_desktop/conversation_deployment.py")
 deployment = importlib.util.module_from_spec(spec)

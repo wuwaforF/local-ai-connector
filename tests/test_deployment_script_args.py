@@ -4,6 +4,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

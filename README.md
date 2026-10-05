@@ -256,7 +256,6 @@ After upgrading, restart the service and reload stdio MCP servers in each host s
 - **macOS only.** Windows needs a replacement for the Unix file locks and sockets.
 - **Packaging:** the integration helpers use fixed endpoint names, a fixed data directory and a fixed LaunchAgent label, and they run from the source `.venv`. Packaging `integrations/` and making these configurable would allow a plain `uv tool install`.
 - **Host fragility:** the Codex Desktop IPC, Antigravity internal RPC and Claude Desktop session details are non-public and can change with host updates. Per-version contract tests and early "unsupported host version" errors are needed.
-- **Wake latency:** with default settings, a dispatch waits for the next 5 s poll after the 2 s settle period, adding up to about 3 s. Scheduling the next check at the settle deadline is a good first issue. See `wakeup.py`, where `ready` messages are computed and in the `run()` loop.
 - **Progress feedback:** MCP progress notifications during `delegate` waits (approved, delivered, read, answered) would make long tasks feel smoother.
 - **Localization:** the CLI messages and the control window are Chinese only, and English output is welcome. The dated notes in `docs/` are Chinese and could be summarized in English.
 - **Pending acceptance:** a person has not yet accepted automatic cold-start recovery of Codex Desktop, or LaunchAgent auto-load after login.

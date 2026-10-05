@@ -11,6 +11,8 @@ from local_ai_connector.identity import caller_session
 from local_ai_connector.registry import add_peer
 from local_ai_connector.server import create_app
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 
 @pytest.fixture
 def registry(tmp_path, monkeypatch):

@@ -10,8 +10,21 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from .core import ConnectorError, require
 
 
+def _target_arguments(target_chat, binding_revision, *, required=False):
+    """The bound chat a task is approved for; only sent when known or required."""
+    arguments = {}
+    if binding_revision is not None:
+        arguments["expected_revision"] = binding_revision
+    if target_chat is not None:
+        arguments["expected_label"] = target_chat
+    if required:
+        arguments["require_target"] = True
+    return arguments
+
+
 async def delegate_with_host_permission(ctx, call, decide, target, message, request_key, *, reply_to=None, reply=None,
-                                        conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False):
+                                        conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False,
+                                        target_chat=None, binding_revision=None):
     """Only for an explicitly configured host enforcing mandatory tool permission."""
     require(reply_to is None and reply is None, "invalid_reply",
             "Continue an approved channel through connector_send and connector_receive.")
@@ -23,7 +36,8 @@ async def delegate_with_host_permission(ctx, call, decide, target, message, requ
         task = await call(ctx, action="open", target=target, body=message, key=request_key,
                           ttl_seconds=3600, idle_seconds=120, conversation_mode=conversation_mode,
                           **({'binding_only': True} if binding_only else {}),
-                          **({'selected_conversation': selected_conversation} if selected_conversation is not None else {}))
+                          **({'selected_conversation': selected_conversation} if selected_conversation is not None else {}),
+                          **_target_arguments(target_chat, binding_revision, required=not binding_only))
     conversation = task.get('conversation', {'mode': conversation_mode, 'created': False})
     if task["status"] == "pending":
         task = await decide(ctx, task["id"], "accept")
@@ -31,7 +45,7 @@ async def delegate_with_host_permission(ctx, call, decide, target, message, requ
         result = await call(ctx, action="result", channel=task["id"])
         return {**result, "request_key": request_key, "next_tool": None}
     return {"state": task["status"], "channel": task["id"], "request_key": request_key,
-            "conversation": conversation,
+            "conversation": conversation, **({"target_chat": task["target_chat"]} if "target_chat" in task else {}),
             "next_tool": "connector_receive" if task["status"] == "active" else None,
             "detail": "Continue this channel with receive/send/finish. Stored messages do not prove worker execution."}
 
@@ -104,7 +118,8 @@ async def continue_task(ctx, call, channel, message, request_key, timeout_second
 
 
 async def delegate(ctx, call, decide, target, message, request_key, timeout_seconds=180, *, reply_to=None, reply=None,
-                   mcp_locale="zh-CN", conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False):
+                   mcp_locale="zh-CN", conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False,
+                   target_chat=None, binding_revision=None):
     if mcp_locale not in ("zh-CN", "en-US"):
         raise ValueError("mcp_locale must be zh-CN or en-US")
 
@@ -135,7 +150,8 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
         task = await call(ctx, action="open", target=target, body=message, key=request_key,
                           ttl_seconds=3600, idle_seconds=120, conversation_mode=conversation_mode,
                           **({'binding_only': True} if binding_only else {}),
-                          **({'selected_conversation': selected_conversation} if selected_conversation is not None else {}))
+                          **({'selected_conversation': selected_conversation} if selected_conversation is not None else {}),
+                          **_target_arguments(target_chat, binding_revision))
     channel = task["id"]
     if reply_to is not None:
         require(task["status"] in ("active", "closed"), "invalid_state",
@@ -152,6 +168,13 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
             f"Task ID: {channel}\nAuthorization expires one hour after this task was created and applies only to "
             "task communication on this channel. The worker's host settings still govern permissions for files, commands, and other actions."
         )
+        pinned = task.get("target_chat")
+        if pinned is not None:
+            prompt += text(
+                f"\n\n目标聊天：{pinned['label']}（{pinned['chat']}，绑定版本 {pinned['revision']}）\n"
+                "批准后本任务固定发送到此聊天；之后更换绑定不会改变本任务。",
+                f"\n\nTarget chat: {pinned['label']} ({pinned['chat']}, binding revision {pinned['revision']})\n"
+                "Approval pins this task to that chat; changing the binding later does not move it.")
         prompt += text(
             "\n\n聊天方式：" + ("在目标应用新建独立聊天，并将本通道的后续轮次绑定该聊天。" if conversation_mode == "new" else
                                 "使用已登记的既有聊天；本操作不会新建应用聊天。"),
@@ -320,3 +343,45 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
                     await ctx.report_progress(1, message=text("工作者仍在执行，继续等待", "The worker is still running. Continuing to wait."))
     except TimeoutError:
         return running
+
+
+async def bind_this_chat(ctx, call, decide_binding, label, request_key, *, host_permission=False):
+    """Ask, in the chat being bound, to make it this host's collaboration chat.
+
+    The chat identity comes from the host through the adapter. Approval saves routing only.
+    """
+    request = await call(ctx, action="bind_request", label=label, key=request_key)
+    if request["state"] != "pending":
+        return request
+    if host_permission:
+        # The host's native per-call permission gated this tool call before it arrived.
+        return await decide_binding(ctx, request["request"], "accept")
+    caps = ctx.client_capabilities
+    elicitation = caps.elicitation if caps else None
+    modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
+    require(elicitation is not None and (elicitation.form is not None or elicitation.url is None)
+            and (modern or ctx.session.can_send_request),
+            "host_confirmation_unavailable", "This chat cannot show a confirmation form; nothing was bound.")
+    replaces = request["replaces"]
+    prompt = (f"Bind this chat as the {request['endpoint']} collaboration chat\n\nLabel: {request['label']}\n"
+              f"This chat: {request['chat']}\n"
+              + (f"Replaces: {replaces['label']} ({replaces['chat']}, revision {replaces['revision']})\n" if replaces else "")
+              + "\nApproval saves routing only. It grants no task permission: each task is still approved in the "
+                "desktop that starts it, and tasks already approved stay on their original chat. "
+                "Decline or Cancel keeps the current binding.")
+    form = ElicitRequest(params=ElicitRequestFormParams(message=prompt, requested_schema={"type": "object", "properties": {}}))
+    if modern:
+        responses = ctx.input_responses or {}
+        if "approval" not in responses:
+            return InputRequiredResult(input_requests={"approval": form}, request_state=request["request"])
+        require(ctx.request_state == request["request"] and isinstance(responses["approval"], ElicitResult),
+                "invalid_confirmation", "The confirmation is not bound to this binding request; nothing was bound.")
+        confirmation = responses["approval"]
+    else:
+        async with asyncio.timeout(300):
+            confirmation = await ctx.session.send_request(
+                form, ElicitResult, metadata=ServerMessageMetadata(related_request_id=ctx.request_id))
+    require(confirmation.action in ("accept", "decline", "cancel") and
+            (confirmation.action != "accept" or confirmation.content in (None, {})),
+            "invalid_confirmation", "The host returned an invalid confirmation; nothing was bound.")
+    return await decide_binding(ctx, request["request"], confirmation.action)

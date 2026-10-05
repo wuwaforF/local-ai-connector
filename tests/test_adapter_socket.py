@@ -12,6 +12,8 @@ from local_ai_connector.adapter_socket import SocketAdapter, serve
 from local_ai_connector.server import create_app
 from local_ai_connector.wakeup import AdapterError, load_config
 
+pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
+
 BRIDGE = '''
 import json, sys
 r = json.load(sys.stdin)

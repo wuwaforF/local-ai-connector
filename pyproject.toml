@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "Local, consent-bound conversations between existing desktop AI workers"
 requires-python = ">=3.11"
 license = "MIT"
-dependencies = ["mcp==2.2.0", "httpx>=0.28,<1", "starlette>=0.47,<2", "uvicorn>=0.35,<1"]
+dependencies = [
+    "mcp==2.2.0", "httpx>=0.28,<1", "starlette>=0.47,<2", "uvicorn>=0.35,<1",
+    "tomlkit>=0.13,<1",
+    "pywin32>=308; sys_platform == 'win32'",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "pytest-asyncio>=1,<2"]
@@ -22,4 +26,8 @@ packages = ["src/local_ai_connector"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "posix: needs POSIX primitives (Unix sockets, owner/mode bits, fcntl); skipped on Windows",
+    "macos: exercises macOS host integrations or paths; runs only on macOS",
+]
 

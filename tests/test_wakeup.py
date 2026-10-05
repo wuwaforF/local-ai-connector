@@ -264,6 +264,54 @@ async def test_settle_revocation_and_expiry_before_dispatch(env):
     assert env.broker.channel(expiring)["status"] == "expired"
 
 
+async def run_counting_steps(d):
+    steps, original = [], d.step
+
+    async def counted():
+        steps.append(None)
+        await original()
+    d.step = counted
+    return steps, asyncio.create_task(d.run())
+
+
+async def stop(task):
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_run_wakes_when_settling_ends_not_at_the_next_poll(env):
+    d = env.dispatcher(settle_seconds=0.2, poll_seconds=30)
+    await approved(env.broker)
+    steps, task = await run_counting_steps(d)
+    try:
+        await asyncio.sleep(0.05)
+        assert len(steps) == 1 and env.host.calls == []  # still settling: host not contacted
+        env.now[0] += 0.2
+        for _ in range(40):
+            if env.host.sent:
+                break
+            await asyncio.sleep(0.05)
+        assert len(env.host.sent) == 1 and len(steps) == 2
+    finally:
+        await stop(task)
+
+
+async def test_run_does_not_spin_on_settled_work_the_host_deferred(env):
+    d = env.dispatcher(settle_seconds=0.2, poll_seconds=30)
+    env.host.state = "busy"
+    await approved(env.broker)
+    steps, task = await run_counting_steps(d)
+    try:
+        await asyncio.sleep(0.05)
+        env.now[0] += 0.2
+        await asyncio.sleep(0.5)
+        assert env.host.calls == ["confirm", "status"] and env.host.sent == []
+        assert len(steps) == 2  # the deferred batch waits for the poll or a broker change
+    finally:
+        await stop(task)
+
+
 async def test_revocation_racing_the_send_exposes_nothing(env):
     d = env.dispatcher()
     channel = await approved(env.broker)
@@ -795,9 +843,10 @@ def test_config_is_explicit_and_disabled_by_default(tmp_path):
         write_config(tmp_path, bad)
         with pytest.raises(WakeConfigError):
             load_config(tmp_path, {"zcode"})
-    write_config(tmp_path, {"enabled": True, "bindings": {"zcode": binding}}, mode=0o666)
-    with pytest.raises(WakeConfigError):
-        load_config(tmp_path, {"zcode"})
+    if sys.platform != "win32":  # Windows access is checked through ACLs in test_os_adapter.py
+        write_config(tmp_path, {"enabled": True, "bindings": {"zcode": binding}}, mode=0o666)
+        with pytest.raises(WakeConfigError):
+            load_config(tmp_path, {"zcode"})
 
 
 def make_app(tmp_path):

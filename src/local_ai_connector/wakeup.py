@@ -28,9 +28,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sqlite3
-import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -343,6 +343,7 @@ class Dispatcher:
         self.turn_timeout, self.max_attempts = turn_timeout, max_attempts
         self.send_when_unknown, self.poll = send_when_unknown, poll_seconds
         self.restore_timeout = restore_timeout_seconds
+        self.settles_at = math.inf  # earliest moment a settling message becomes ready
         self.not_before: dict[str, float] = {}
         self.reported: set[tuple[str, str]] = set()
         for dispatch in store.db.execute("SELECT id,peer,target FROM dispatches ORDER BY created").fetchall():
@@ -512,6 +513,7 @@ class Dispatcher:
             # can wake it again, while unrelated tasks still wait for the existing run.
             fresh = [r for r in fresh if r["kind"] == "answer" and r["channel"] in channels]
         ready = [r for r in fresh if r["sent"] + self.settle <= now]
+        self.settles_at = min([self.settles_at, *(r["sent"] + self.settle for r in fresh if r["sent"] + self.settle > now)])
         return ready, bool(fresh)
 
     # --- main loop -------------------------------------------------------------------
@@ -526,11 +528,16 @@ class Dispatcher:
                 self.broker.record_incident("server", "wakeup_error", f"{type(exc).__name__}: {exc}"[:500])
             async with self.broker.changed:
                 try:
-                    await asyncio.wait_for(self.broker.changed.wait(), self.poll)
+                    await asyncio.wait_for(self.broker.changed.wait(), self._wait_seconds())
                 except (TimeoutError, asyncio.TimeoutError):
                     pass
 
+    def _wait_seconds(self):
+        """Wait for the next poll, or only until a settling message becomes ready."""
+        return min(self.poll, max(0.0, self.settles_at - self.clock()))
+
     async def step(self):
+        self.settles_at = math.inf
         for binding in self.bindings.values():
             await self._progress(binding)
             if not binding.suspended:
@@ -770,10 +777,12 @@ OPTIONS = {"settle_seconds": (0, 3600), "busy_retry_seconds": (1, 3600), "ack_ti
 
 
 def load_config(data: Path, peers) -> tuple[dict[str, Binding], dict | None]:
+    from . import os_adapter
     path = data / "wakeup.json"
-    mode = path.stat().st_mode
-    if mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise WakeConfigError("wakeup.json names a command to execute and must not be group/world writable")
+    try:
+        os_adapter.check_private(path, writable_only=True)
+    except os_adapter.NotPrivate:
+        raise WakeConfigError("wakeup.json names a command to execute and must not be writable by other users") from None
     try:
         config = json.loads(path.read_text())
     except ValueError:
@@ -816,6 +825,9 @@ def parse_config(config, peers) -> tuple[dict[str, Binding], dict | None]:
             adapter = CommandAdapter(command, float(timeout))
             fields = {"adapter", "command", "target", "timeout", "restore"}
         elif kind == "socket":
+            from . import os_adapter
+            if not os_adapter.supports("unix_socket_bridge"):
+                raise WakeConfigError("socket adapter is not supported on this platform")
             from .adapter_socket import SocketAdapter
             socket_path = spec.get("socket")
             if not isinstance(socket_path, str) or not Path(socket_path).is_absolute():
