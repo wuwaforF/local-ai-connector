@@ -12,7 +12,8 @@ from .registry import MCP_LOCALES
 
 def save_private(path: Path, value):
     from . import os_adapter
-    os_adapter.ensure_private_dir(path.parent)
+    if not path.parent.exists():
+        os_adapter.ensure_private_dir(path.parent)
     os_adapter.create_private_file(path, json.dumps(value, ensure_ascii=False, indent=2).encode())
 
 

@@ -145,13 +145,14 @@ class Bindings:
         require(isinstance(label, str) and 0 < len(label.strip()) <= 80 and label.isprintable(),
                 "invalid_label", "A chat label must be 1 to 80 printable characters.")
         require(isinstance(key, str) and 0 < len(key) <= 200, "invalid_key", "A stable request key is required.")
+        label = label.strip()
         old = self.db.execute("SELECT * FROM binding_requests WHERE endpoint=? AND session=? AND request_key=?",
                               (endpoint, session, key)).fetchone()
         if old is not None:
             require(old["label"] == label, "idempotency_conflict", "A request key cannot change the chat label.")
             return self._request_view(dict(old))
         now = self.clock()
-        request = {"id": str(uuid4()), "endpoint": endpoint, "session": session, "label": label.strip(),
+        request = {"id": str(uuid4()), "endpoint": endpoint, "session": session, "label": label,
                    "base_revision": self.revision(endpoint), "request_key": key, "status": "pending",
                    "created": now, "expires": now + BIND_REQUEST_TTL, "decided_at": None}
         with self.db:

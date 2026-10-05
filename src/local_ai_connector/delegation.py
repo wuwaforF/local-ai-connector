@@ -378,9 +378,13 @@ async def bind_this_chat(ctx, call, decide_binding, label, request_key, *, host_
                 "invalid_confirmation", "The confirmation is not bound to this binding request; nothing was bound.")
         confirmation = responses["approval"]
     else:
-        async with asyncio.timeout(300):
-            confirmation = await ctx.session.send_request(
-                form, ElicitResult, metadata=ServerMessageMetadata(related_request_id=ctx.request_id))
+        try:
+            async with asyncio.timeout(300):
+                confirmation = await ctx.session.send_request(
+                    form, ElicitResult, metadata=ServerMessageMetadata(related_request_id=ctx.request_id))
+        except TimeoutError:
+            return {**request, "state": "approval_timeout",
+                    "detail": "No answer to the confirmation; nothing was bound. Ask again with the same request_key."}
     require(confirmation.action in ("accept", "decline", "cancel") and
             (confirmation.action != "accept" or confirmation.content in (None, {})),
             "invalid_confirmation", "The host returned an invalid confirmation; nothing was bound.")

@@ -121,18 +121,25 @@ def ensure_private_dir(path: Path):
 
 
 def create_private_file(path: Path, data: bytes):
-    """Create a new file; it inherits the private directory's DACL and is then verified."""
+    """Create a new file with a protected owner-only DACL, set before content is written."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY | os.O_NOINHERIT, 0o600)
-    with os.fdopen(fd, "wb") as file:
-        file.write(data)
-        file.flush()
-        os.fsync(file.fileno())
+    try:
+        _protect(path, directory=False)  # before any content is written
+        with os.fdopen(fd, "wb") as file:
+            fd = None
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+    finally:
+        if fd is not None:
+            os.close(fd)
     check_private(path)
 
 
 def replace_private_file(path: Path, data: bytes):
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".part")
     try:
+        _protect(Path(temporary), directory=False)  # before any content is written
         with os.fdopen(fd, "wb") as file:
             file.write(data)
             file.flush()

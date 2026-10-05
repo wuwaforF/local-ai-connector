@@ -19,6 +19,7 @@ DISPLAY_NAME = "Claude Desktop Code"
 ENDPOINT = {"approval_transport": "host_tool_permission",
             "chat_identity": {"source": "env", "variable": "CLAUDE_CODE_SESSION_ID", "namespace": "claude"}}
 OWNED_KEYS = ("command", "args")
+EDITS_CONFIG_DIRECTLY = False  # Claude's own CLI edits ~/.claude.json; nothing to back up here
 PERMISSIONS = (
     "Reconnect MCP servers in Claude (/mcp, then reconnect) or start a new chat so it loads the new entry.",
     "connector_delegate always asks for your permission in Claude; that prompt is the task approval. "

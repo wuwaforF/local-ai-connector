@@ -149,7 +149,7 @@ def _entry_state(adapter, name: str, desired: dict, record: dict | None, env: Ho
 
 
 def _backup(data: Path, path: Path, host: str):
-    if not path.exists():
+    if not path.exists() or not getattr(HOSTS[host], "EDITS_CONFIG_DIRECTLY", True):
         return
     backups = data / "backups"
     os_adapter.ensure_private_dir(backups)
