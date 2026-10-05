@@ -1,7 +1,7 @@
 # Cross-platform first release: architecture and phased plan
 
-Status: **agreed direction, revised 2026-10-05.** Increment 1 is in progress. Nothing in this
-document has been verified on a real Windows or Linux desktop.
+Status: **agreed direction, revised 2026-10-05.** Increment 1 passes automated checks on macOS, Ubuntu
+and Windows CI. Nothing has been verified on a real desktop on any OS.
 
 Product goal: install the connector once in each supported desktop host, bind an existing chat in
 natural language, approve each task in the initiating desktop, and receive the result from the
@@ -208,7 +208,7 @@ automated results listed in each increment's acceptance.
 
 ## 6. Increments
 
-### Increment 1: portable core, exact-chat rules, isolated setup (current)
+### Increment 1: portable core, exact-chat rules, isolated setup (automated checks passing)
 
 Smallest set of changes needed to validate the six items below.
 
@@ -257,11 +257,20 @@ Smallest set of changes needed to validate the six items below.
 
 **Results (2026-10-05, branch `increment-1-portable-core`):**
 
-| Platform | Evidence | Result |
+All three platforms passed on the same commit (`b22a62c`, CI run 37389970684):
+
+| Platform | Result | Scope |
 | --- | --- | --- |
-| macOS | local and CI run 37387479471 | full suite: 909 passed |
-| Ubuntu | CI run 37387479471 | 786 passed. macOS host-integration modules are excluded. |
-| Windows | CI run 37387983056 | WINDOWS_RESULT |
+| macOS (local and CI) | 909 passed | Full suite |
+| Ubuntu | 786 passed | macOS host-integration modules are excluded (`tests/conftest.py`). |
+| Windows | 530 passed, 2 skipped | Also excludes POSIX-only modules: Unix-socket bridges, Codex Desktop IPC, native-conversation providers, the Codex catalog and `files.py` workspace writes. The 2 skips are symbolic-link cases, which need privileges on Windows. |
+
+Windows problems found and fixed during these runs:
+
+- `fcntl` was imported at module level.
+- `OWNER RIGHTS` access entries (used by CPython for `0o700` directories) were treated as other users.
+- The detached service crashed on a non-ASCII banner written in the ANSI code page.
+- Windows releases locks and file handles of an exited process with a delay.
 
 Coverage of each validation:
 
