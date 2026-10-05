@@ -168,11 +168,18 @@ def main():
         from .server import create_app
         from contextlib import ExitStack
         # Serialize service ownership before opening SQLite; never split waiters across processes.
+        import time
         with ExitStack() as owned:
-            try:
-                owned.enter_context(os_adapter.exclusive_lock(data/"server.lock"))
-            except os_adapter.LockBusy:
-                parser.error("another connector service already owns this data directory")
+            # Windows releases a crashed owner's lock asynchronously, so wait briefly before giving up.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    owned.enter_context(os_adapter.exclusive_lock(data/"server.lock"))
+                    break
+                except os_adapter.LockBusy:
+                    if time.monotonic() >= deadline:
+                        parser.error("another connector service already owns this data directory")
+                    time.sleep(0.2)
             os.umask(0o077)
             config=json.loads((data/"server.json").read_text())
             print(f"Local AI Connector listening on {config['url']} (Ctrl-C to stop)", flush=True)

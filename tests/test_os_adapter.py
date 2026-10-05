@@ -61,8 +61,15 @@ def test_lock_is_exclusive_across_processes(tmp_path):
     finally:
         holder.kill()
         holder.wait()
-    with os_adapter.exclusive_lock(path):  # released when the holder exits
-        pass
+    # Released when the holder exits; Windows may release a killed process's lock with a delay.
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            with os_adapter.exclusive_lock(path):
+                break
+        except os_adapter.LockBusy:
+            assert time.monotonic() < deadline, "lock was not released after the holder exited"
+            time.sleep(0.1)
 
 
 def test_private_directory_and_files_are_verified(tmp_path):

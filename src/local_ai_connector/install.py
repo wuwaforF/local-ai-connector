@@ -157,6 +157,19 @@ def _backup(data: Path, path: Path, host: str):
                                    path.read_bytes())
 
 
+def _remove_tree(path: Path, wait: float = 10.0):
+    """Delete an owned directory; Windows can keep a just-exited service's files open briefly."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+
 def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dry_run: bool = False,
           start_service: bool = True) -> dict:
     ctx = ctx or Context.current()
@@ -250,7 +263,7 @@ def uninstall(*, profile: str = "default", ctx: Context | None = None, hosts: li
         if purge or not remaining:
             report["service"] = service.stop(data)
         if purge:
-            shutil.rmtree(data)
+            _remove_tree(data)
             report["data_dir"] = "removed"
         else:
             _write_manifest(data, manifest)
