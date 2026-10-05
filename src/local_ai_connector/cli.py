@@ -24,6 +24,12 @@ def peer_name(value):
 
 
 def main():
+    if sys.platform == "win32":
+        # Redirected Windows output defaults to the ANSI code page, which cannot encode every
+        # path or message; a detached service writing to its log would otherwise fail at start.
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="本地 AI 连接器")
     parser.add_argument("--data",type=Path,default=Path(".connector"))
     sub = parser.add_subparsers(dest="command",required=True)
@@ -169,7 +175,7 @@ def main():
                 parser.error("another connector service already owns this data directory")
             os.umask(0o077)
             config=json.loads((data/"server.json").read_text())
-            print(f"本地连接器：{config['url']}，按 Ctrl-C 停止",flush=True)
+            print(f"Local AI Connector listening on {config['url']} (Ctrl-C to stop)", flush=True)
             app = create_app(data)
             server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=config["port"], access_log=False,
                                                    timeout_graceful_shutdown=5))

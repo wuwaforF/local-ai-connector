@@ -46,7 +46,16 @@ def ensure(data: Path, url: str, token: str, *, runtime: str = sys.executable, w
         if state == "foreign":
             raise ServiceError("port_collision", f"Another program took {url}; the connector could not start.")
         time.sleep(0.1)
-    raise ServiceError("service_start_failed", f"The service did not start within {wait:.0f} s; see {data / 'service.log'}.")
+    raise ServiceError("service_start_failed", f"The service did not start within {wait:.0f} s; see "
+                       f"{data / 'service.log'}.{_log_tail(data / 'service.log')}")
+
+
+def _log_tail(path: Path, lines: int = 15) -> str:
+    try:
+        tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+    except OSError:
+        return ""
+    return ("\nLast lines:\n" + "\n".join(tail)) if tail else ""
 
 
 def ensure_for_endpoint(endpoint_file: Path) -> str:

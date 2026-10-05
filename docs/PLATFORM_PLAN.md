@@ -255,6 +255,34 @@ Smallest set of changes needed to validate the six items below.
 | Repeated setup | A second `setup` changes nothing. Unrelated host entries and comments are preserved. `--dry-run` writes nothing. |
 | Installation isolation | A foreign data directory, MCP entry or occupied port is detected and refused. Two profiles coexist. `uninstall` removes only owned entries and leaves edited or foreign ones in place. |
 
+**Results (2026-10-05, branch `increment-1-portable-core`):**
+
+| Platform | Evidence | Result |
+| --- | --- | --- |
+| macOS | local and CI run 37387479471 | full suite: 909 passed |
+| Ubuntu | CI run 37387479471 | 786 passed. macOS host-integration modules are excluded. |
+| Windows | CI run 37387983056 | WINDOWS_RESULT |
+
+Coverage of each validation:
+
+| Validation | Tests |
+| --- | --- |
+| Cross-platform startup | `test_startup_e2e.py` runs on every CI platform. It uses the command lines written by `setup`, starts the service on demand as a real detached process, binds in natural language, approves, delivers to the exact chat and returns the answer. |
+| Approval / rebinding races | `test_bindings.py`: re-binding before approval, after approval and concurrently, in both orders |
+| Wrong-session rejection | `test_bindings.py` and the e2e test: another chat on the same endpoint, and a call with no identity |
+| Stale credentials | `test_bindings.py`: re-enrollment, re-binding back to the same chat, expiry, unbinding, restart, and no exposure in status, incidents, errors or the database |
+| Repeated setup | `test_install.py` and the e2e test |
+| Installation isolation | `test_install.py`: live-style entry name collision, Claude project-scope shadowing, foreign data directory, port taken by another program, side-by-side profile, owned-only uninstall and purge |
+
+Not verified by Increment 1:
+
+- **Any real desktop.**
+- **Claude chat identity on a real host.** Delivery of `CLAUDE_CODE_SESSION_ID` to the stdio MCP process comes from Claude's changelog and is not observed yet.
+- **Codex `_meta` with the new per-call identity.** The `_meta` thread ID was observed with the earlier pinned identity mode, not with this one.
+- **Windows ACL behaviour beyond the CI runner account**, for example on standard user accounts or managed devices.
+- **Windows service lifetime.** A service started on demand inside a launcher that puts its children in a kill-on-close job object stops with that launcher. The MCP SDK's own Windows launcher does this. The next call restarts the service from its stored state. Login autostart (Increment 3) removes the dependency.
+- **Two test-only changes.** Two existing MCP round-trip tests had their 3 s waits raised to 15 s after timing out on the Ubuntu runner. Passing runs are not slower.
+
 ### Increment 2: automatic wake-up on the pinned target
 
 - The dispatcher reads the pinned target, and `wakeup.json` keeps only legacy static bindings.

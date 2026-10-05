@@ -28,6 +28,9 @@ _WRITE_MASK = (con.FILE_WRITE_DATA | con.FILE_APPEND_DATA | con.FILE_WRITE_EA | 
                | con.WRITE_DAC | con.WRITE_OWNER | con.DELETE | con.GENERIC_WRITE | con.GENERIC_ALL)
 _SYSTEM = win32security.ConvertStringSidToSid("S-1-5-18")
 _ADMINISTRATORS = win32security.ConvertStringSidToSid("S-1-5-32-544")
+# OWNER RIGHTS stands for whoever owns the object; the owner itself is checked separately.
+# CPython uses it for directories created with mode 0o700.
+_OWNER_RIGHTS = win32security.ConvertStringSidToSid("S-1-3-4")
 
 
 class LockBusy(BlockingIOError):
@@ -83,17 +86,18 @@ def check_private(path: Path, *, writable_only: bool = False):
         win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION)
     user = _current_user()
     trusted = (user, _SYSTEM, _ADMINISTRATORS)
-    if descriptor.GetSecurityDescriptorOwner() not in trusted:
-        raise NotPrivate(f"{path} is not owned by the current user")
+    owner = descriptor.GetSecurityDescriptorOwner()
+    if owner not in trusted:
+        raise NotPrivate(f"{path} is owned by {win32security.ConvertSidToStringSid(owner)}, not the current user")
     dacl = descriptor.GetSecurityDescriptorDacl()
     if dacl is None:
         raise NotPrivate(f"{path} has no access control list (everyone has access)")
     for index in range(dacl.GetAceCount()):
         (ace_type, ace_flags), mask, sid = dacl.GetAce(index)[:3]
-        if ace_type != _ALLOWED_ACE or ace_flags & _INHERIT_ONLY or sid in trusted:
+        if ace_type != _ALLOWED_ACE or ace_flags & _INHERIT_ONLY or sid in trusted or sid == _OWNER_RIGHTS:
             continue
         if not writable_only or mask & _WRITE_MASK:
-            raise NotPrivate(f"{path} grants access to another principal")
+            raise NotPrivate(f"{path} grants access to {win32security.ConvertSidToStringSid(sid)}")
 
 
 def _protect(path: Path, *, directory: bool):

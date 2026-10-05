@@ -21,11 +21,14 @@ MACOS_ONLY = {
     "test_deployment_script_args", "test_native_conversation_deployment",
 }
 # Unix sockets (including the macOS Codex Desktop IPC probes), owner/mode bits, or the files.py
-# workspace write, which the Windows adapter does not provide by design.
+# workspace write, which the Windows adapter does not provide by design. The native-conversation
+# providers and the Codex chat catalog are macOS-verified integrations whose fixtures use POSIX
+# workspace paths.
 POSIX_ONLY = {
     "test_adapter_socket", "test_claude_binding_usage", "test_claude_code_bridge", "test_claude_native_binding_mcp",
-    "test_codex_desktop_bridge", "test_codex_desktop_probe", "test_codex_desktop_status_probe",
-    "test_example_configs", "test_files", "test_native_host",
+    "test_codex_binding_catalog", "test_codex_desktop_bridge", "test_codex_desktop_probe",
+    "test_codex_desktop_status_probe", "test_codex_saved_bindings", "test_codex_selected_routes",
+    "test_conversations", "test_example_configs", "test_files", "test_native_host",
 }
 
 
