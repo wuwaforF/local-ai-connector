@@ -1,11 +1,31 @@
+"""Platform scope of the test suite.
+
+The portable core runs everywhere. Modules below exercise host integrations or POSIX
+primitives that the Windows OS adapter deliberately does not provide; they are excluded
+before import, because several import POSIX-only modules at load time.
+"""
 import sys
 
-import pytest
+# macOS host integrations: zsh deployment scripts, launchd, Desktop paths and bundles. The Claude
+# Desktop binding tests also rely on macOS giving a replaced socket a new inode.
+MACOS_ONLY = {
+    "test_antigravity_native_deployment", "test_chat_approval_deployment", "test_claude_desktop_binding",
+    "test_claude_guided_binding",
+    "test_claude_native_preflight", "test_claude_onboarding", "test_codex_cold_restore_deployment",
+    "test_codex_desktop_deployment_config", "test_codex_quick_binding_deployment", "test_deployment_script_args",
+    "test_native_conversation_deployment",
+}
+# Unix sockets, owner/mode bits or the files.py workspace write (unsupported on Windows by design).
+POSIX_ONLY = {
+    "test_adapter_socket", "test_claude_binding_usage", "test_claude_code_bridge", "test_claude_native_binding_mcp", "test_codex_desktop_bridge", "test_codex_desktop_probe", "test_example_configs",
+    "test_files", "test_native_host",
+}
 
 
-def pytest_collection_modifyitems(config, items):
-    for item in items:
-        if "macos" in item.keywords and sys.platform != "darwin":
-            item.add_marker(pytest.mark.skip(reason="macOS host integration"))
-        elif "posix" in item.keywords and sys.platform == "win32":
-            item.add_marker(pytest.mark.skip(reason="needs POSIX primitives that the Windows adapter does not provide"))
+def pytest_ignore_collect(collection_path, config):
+    name = collection_path.stem
+    if name in MACOS_ONLY and sys.platform != "darwin":
+        return True
+    if name in POSIX_ONLY and sys.platform == "win32":
+        return True
+    return None

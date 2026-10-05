@@ -67,12 +67,11 @@ def stop(data: Path, *, wait: float = 15.0) -> str:
         return "foreign"
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
+        # Stopped means the process released the data directory, not only the port: on Windows
+        # its database files stay locked until the process has exited.
         try:
-            with httpx.Client(base_url=config["url"], trust_env=False, timeout=1) as http:
-                http.get("/admin", headers={"Authorization": f"Bearer {config['admin_token']}"})
-        except httpx.ConnectError:
-            return "stopped"
-        except httpx.HTTPError:
-            pass
-        time.sleep(0.1)
+            with os_adapter.exclusive_lock(data / "server.lock"):
+                return "stopped"
+        except os_adapter.LockBusy:
+            time.sleep(0.1)
     raise ServiceError("service_stop_failed", "The service did not stop in time.")

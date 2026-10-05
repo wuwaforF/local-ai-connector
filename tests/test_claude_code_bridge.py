@@ -11,8 +11,6 @@ import pytest
 
 from local_ai_connector.wakeup import AdapterError, CommandAdapter
 
-pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
-
 
 BRIDGE_PATH = Path(__file__).resolve().parents[1] / "integrations/claude_code/bridge.py"
 spec = importlib.util.spec_from_file_location("claude_code_bridge", BRIDGE_PATH)

@@ -26,8 +26,4 @@ packages = ["src/local_ai_connector"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = [
-    "posix: needs POSIX primitives (Unix sockets, owner/mode bits, fcntl); skipped on Windows",
-    "macos: exercises macOS host integrations or paths; runs only on macOS",
-]
 

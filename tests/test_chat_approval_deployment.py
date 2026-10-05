@@ -14,8 +14,6 @@ import httpx
 from local_ai_connector.cli import main
 from local_ai_connector.core import Broker
 
-pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
-
 SCRIPT = Path(__file__).parents[1] / "deployment/enable-peer-chat-approval.command"
 
 

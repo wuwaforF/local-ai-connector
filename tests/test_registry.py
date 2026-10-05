@@ -1,6 +1,4 @@
-import fcntl
 import json
-import stat
 import sys
 
 import pytest
@@ -8,10 +6,9 @@ import pytest
 from local_ai_connector.cli import main
 from local_ai_connector.core import Broker, ConnectorError
 from local_ai_connector.identity import caller_session
+from local_ai_connector import os_adapter
 from local_ai_connector.registry import add_peer
 from local_ai_connector.server import create_app
-
-pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
 
 
 @pytest.fixture
@@ -26,7 +23,7 @@ async def test_register_arbitrary_worker_discover_and_exchange_after_restart(reg
     endpoint = add_peer(registry, "custom-worker", profile)
     config = json.loads(endpoint.read_text())
     assert config["client"] == "generic"
-    assert stat.S_IMODE(endpoint.stat().st_mode) == 0o600
+    assert os_adapter.is_private(endpoint)
     server = json.loads((registry / "server.json").read_text())
     broker = Broker(registry / "state.sqlite3")
     for peer, token in server["peers"].items():
@@ -54,8 +51,7 @@ async def test_register_arbitrary_worker_discover_and_exchange_after_restart(reg
 
 def test_running_service_and_duplicate_registration_preserve_credentials(registry):
     before = (registry / "server.json").read_bytes()
-    with (registry / "server.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with os_adapter.exclusive_lock(registry / "server.lock"):
         with pytest.raises(ValueError, match="Stop"):
             add_peer(registry, "new-worker", {})
     assert not (registry / "new-worker.json").exists()
@@ -140,8 +136,7 @@ def test_invalid_locale_does_not_write_registration(registry, locale):
 
 def test_locale_registration_still_requires_stopped_service(registry):
     before = (registry / "server.json").read_bytes()
-    with (registry / "server.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with os_adapter.exclusive_lock(registry / "server.lock"):
         with pytest.raises(ValueError, match="Stop"):
             add_peer(registry, "localized-worker", {}, mcp_locale="en-US")
     assert not (registry / "localized-worker.json").exists()

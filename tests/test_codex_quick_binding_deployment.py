@@ -8,8 +8,6 @@ import pytest
 from test_native_conversation_deployment import ROOT, deployment as ingress_deployment
 from test_native_conversation_deployment import installation as native_installation
 
-pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
-
 
 spec = importlib.util.spec_from_file_location(
     'quick_binding_deployment', ROOT / 'integrations/codex_desktop/quick_binding_deployment.py')

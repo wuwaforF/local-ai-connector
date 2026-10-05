@@ -12,8 +12,6 @@ import pytest
 from test_claude_onboarding import world, open_inbox, read_json, write_metadata
 from integrations.claude_code import guided_binding, onboarding
 
-pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
-
 
 def isolated(world, tmp_path, monkeypatch, *, first_binding=False, workspace_name="Project ü space"):
     home = tmp_path / "second user's home ü"

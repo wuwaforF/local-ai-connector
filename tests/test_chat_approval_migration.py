@@ -1,16 +1,14 @@
-import fcntl
 import json
 import os
 from pathlib import Path
-import stat
 import sys
 
 import pytest
 
+from hostfakes import grant_others
+from local_ai_connector import os_adapter
 from local_ai_connector.cli import main
 from local_ai_connector.registry import enable_chat_approval
-
-pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
 
 
 @pytest.fixture
@@ -47,8 +45,8 @@ def test_migrate_two_arbitrary_peers_preserves_credentials_and_other_state(confi
         old, new = json.loads(before[path.name]), json.loads(after[path.name])
         assert new == {**old, "tool_profile": "participant", "mcp_locale": "en-US", "approval_token": server["approval_tokens"][peer]}
         assert new["approval_token"] not in {server["admin_token"], *server["peers"].values()}
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert stat.S_IMODE((configured / "server.json").stat().st_mode) == 0o600
+        assert os_adapter.is_private(path)
+    assert os_adapter.is_private(configured / "server.json")
     enable_chat_approval(configured, ["first", "second"])
     assert snapshot(configured) == after
     assert not list(configured.glob("approval-*.tmp"))
@@ -67,8 +65,7 @@ def test_identity_mapping_and_bound_session_are_preserved(configured):
 
 def test_live_service_lock_refuses_without_writes(configured):
     before = snapshot(configured)
-    with (configured / "server.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with os_adapter.exclusive_lock(configured / "server.lock"):
         with pytest.raises(ValueError, match="Stop"):
             enable_chat_approval(configured, ["first"])
     assert snapshot(configured) == before
@@ -156,7 +153,7 @@ def test_failed_rollback_retains_private_recovery_copy(configured, monkeypatch):
     copies = list(configured.glob("approval-*.tmp"))
     server_copy = next(path for path in copies if path.read_bytes() == before["server.json"])
     assert str(server_copy) in report
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in copies)
+    assert all(os_adapter.is_private(path) for path in copies)
     assert all(token not in report for token in json.loads(before["server.json"])["peers"].values())
     assert (configured / "first.json").read_bytes() == before["first.json"]
 
@@ -164,12 +161,13 @@ def test_failed_rollback_retains_private_recovery_copy(configured, monkeypatch):
 def test_existing_participant_repairs_only_private_file_mode(configured):
     enable_chat_approval(configured, ["first"])
     before = snapshot(configured)
-    (configured / "first.json").chmod(0o644)
+    grant_others(configured / "first.json", write=False)
     enable_chat_approval(configured, ["first"])
     assert snapshot(configured) == before
-    assert stat.S_IMODE((configured / "first.json").stat().st_mode) == 0o600
+    assert os_adapter.is_private(configured / "first.json")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symbolic links needs privileges on Windows")
 def test_symlink_configuration_is_not_replaced(configured):
     source = configured / "first.json"
     target = configured / "real-first.json"

@@ -4,8 +4,6 @@ import pytest
 from local_ai_connector.files import write_lease,write_file,snapshot
 from local_ai_connector.core import ConnectorError
 
-pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
-
 
 def hold(root,ready,release):
     with write_lease(Path(root)):

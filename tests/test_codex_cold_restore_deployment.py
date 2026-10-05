@@ -9,8 +9,6 @@ import types
 
 import pytest
 
-pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deployment/enable-codex-desktop-cold-restore.command"

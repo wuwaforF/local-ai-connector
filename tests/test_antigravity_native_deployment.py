@@ -7,8 +7,6 @@ import tomllib
 import pytest
 from test_native_conversation_deployment import deployment as installer, installation
 
-pytestmark = pytest.mark.macos  # macOS deployment scripts, launchd or Desktop paths
-
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('ag_native_deployment', ROOT / 'integrations/antigravity/native_deployment.py')
 deployment = importlib.util.module_from_spec(spec)

@@ -7,26 +7,10 @@ import time
 
 import pytest
 
+from hostfakes import grant_others
 from local_ai_connector import os_adapter
 from local_ai_connector.core import ConnectorError
 from local_ai_connector.wakeup import WakeConfigError, load_config
-
-
-def grant_others(path: Path, *, write: bool):
-    """Give a principal other than the owner read (or write) access."""
-    if sys.platform == "win32":
-        import ntsecuritycon as con
-        import win32security
-        everyone = win32security.ConvertStringSidToSid("S-1-1-0")
-        descriptor = win32security.GetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
-                                                        win32security.DACL_SECURITY_INFORMATION)
-        dacl = descriptor.GetSecurityDescriptorDacl()
-        mask = con.FILE_GENERIC_WRITE if write else con.FILE_GENERIC_READ
-        dacl.AddAccessAllowedAce(win32security.ACL_REVISION, mask, everyone)
-        win32security.SetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
-                                           win32security.DACL_SECURITY_INFORMATION, None, None, dacl, None)
-    else:
-        os.chmod(path, 0o666 if write else 0o644)
 
 
 def test_application_directories_are_per_user_and_platform_specific(tmp_path):

@@ -10,8 +10,6 @@ from mcp.client.stdio import StdioServerParameters
 
 from local_ai_connector.mcp_server import create_mcp
 
-pytestmark = pytest.mark.posix  # Unix sockets, owner/mode bits or fcntl
-
 
 async def forbidden(*args, **kwargs):
     raise AssertionError('Reading usage must not execute broker, approval or binding callbacks')
