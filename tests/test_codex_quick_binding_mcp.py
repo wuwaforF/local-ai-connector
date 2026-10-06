@@ -200,10 +200,14 @@ async def test_exact_selected_chat_has_one_initiating_confirmation(participants,
         listed = await requester.call_tool('connector_codex_binding_catalog', {'target': 'reviewer'})
         assert not listed.is_error
         selected = json.loads(listed.content[0].text)['choices'][0]
+        cursor = 0
+
         async def synthetic_worker_answer(body):
-            incoming = await worker.call_tool('connector_receive', {'timeout': 60})
-            question = next(q for q in json.loads(incoming.content[0].text)['messages']
-                            if q['kind'] == 'question' and not q['resolved'])
+            nonlocal cursor
+            incoming = await worker.call_tool('connector_receive', {'after': cursor, 'timeout': 60})
+            received = json.loads(incoming.content[0].text)
+            cursor = received['cursor']
+            question = next(q for q in received['messages'] if q['kind'] == 'question' and not q['resolved'])
             plan = question['native_execution']
             assert plan['arguments']['threadId'] == CHILD and plan['arguments']['hostId'] == 'local'
             handle_hook(broker.db, event(plan), 'reviewer', SESSION, '/worker', broker.clock(),

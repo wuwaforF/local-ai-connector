@@ -28,9 +28,13 @@ async def test_native_creation_and_continuation_through_real_mcp(participants, m
         args = {"target": "reviewer", "message": "Open a new chat and calculate 48 + 37", "request_key": "native-one",
                 "conversation_mode": "new", "timeout_seconds": 60}
 
+        cursor = 0
+
         async def answer(text):
-            result = await worker.call_tool("connector_receive", {"timeout": 60})
-            messages = json.loads(result.content[0].text)["messages"]
+            nonlocal cursor
+            result = await worker.call_tool("connector_receive", {"after": cursor, "timeout": 60})
+            received = json.loads(result.content[0].text)
+            cursor, messages = received["cursor"], received["messages"]
             question = next(q for q in messages if not q["resolved"] and q["kind"] == "question")
             plan = question["native_execution"]
             handle_hook(broker.db, event(plan), "reviewer", SESSION, "/worker", broker.clock())
