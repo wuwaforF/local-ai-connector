@@ -4,7 +4,7 @@
 
 ## 开始前：完成一次连接器安装
 
-会话绑定向导要求连接器运行环境、已安装并运行的本机服务、`claude_code` 端点登记及兼容的唤醒配置都已存在。它不能从空数据目录完成首次服务安装或端点登记，也不安装 Python 依赖。首次设置请按 [安装、初始化与启动](../README.zh-CN.md#安装与启动)、[端点登记](../README.zh-CN.md#登记工作者及能力)和 [stdio MCP 配置](../README.zh-CN.md#stdio) 完成现有步骤；唤醒适配器契约见[通用化说明](GENERALIZATION.md#可替换唤醒适配器)。
+会话绑定向导要求连接器运行环境、已安装并运行的本机服务、`claude_code` 端点登记及兼容的唤醒配置都已存在。它不能从空数据目录完成首次服务安装或端点登记，也不安装 Python 依赖。首次设置请按 [安装、初始化与启动](REFERENCE.zh-CN.md#安装与启动)、[端点登记](REFERENCE.zh-CN.md#登记工作者及能力)和 [stdio MCP 配置](REFERENCE.zh-CN.md#stdio) 完成现有步骤；唤醒适配器契约见[通用化说明](GENERALIZATION.md#可替换唤醒适配器)。
 
 连接器工作目录必须包含可用的 `.venv/bin/python`。若目标项目尚无 `local_ai_connector` MCP 条目，向导会从当前连接器目录生成条目；此时拒绝使用位于 `~/Documents` 下的运行目录。若项目已有指向独立 Claude 可读运行时的匹配条目，向导会保留并接受该条目。Claude 还须能读写目标项目的 `.mcp.json`。工作区信任、项目 MCP 信任以及宿主原生权限均按 Claude／Codex 界面提示由用户确认，向导不会代为批准。
 

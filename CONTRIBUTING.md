@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Local AI Connector. The project is an early developer preview. Good issues, reviews and small, well-tested pull requests are all welcome. Start with [Known limitations and help wanted](README.md#known-limitations-and-help-wanted) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Thanks for helping improve Local AI Connector. The project is a public preview. Good issues, reviews and small, well-tested pull requests are all welcome. Start with the [open issues](https://github.com/wuwaforF/local-ai-connector/issues) (look for `help wanted` and `good first issue`), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/PLATFORM_PLAN.md](docs/PLATFORM_PLAN.md).
 
 ## Development setup
 

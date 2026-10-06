@@ -1,12 +1,12 @@
 """Run a command bridge in its host environment, reached over a private local socket."""
 import argparse
 import asyncio
-import fcntl
 import json
 import os
 from pathlib import Path
 import stat
 
+from . import os_adapter
 from .wakeup import AdapterError, CommandAdapter
 
 LIMIT = 65536
@@ -14,6 +14,7 @@ LIMIT = 65536
 
 class SocketAdapter(CommandAdapter):
     def __init__(self, path: str, timeout: float = 30):
+        os_adapter.require("unix_socket_bridge")
         self.path, self.timeout = path, timeout
 
     async def _call(self, op, **fields):
@@ -88,12 +89,13 @@ async def handle(reader, writer, adapter, native_conversations=False):
 
 
 async def serve(path: Path, command: list[str], timeout: float, native_conversations=False):
+    os_adapter.require("unix_socket_bridge")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    info = path.parent.stat()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-        raise ValueError("Socket directory must be owned by this user with mode 0700")
-    with path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        os_adapter.check_private(path.parent)
+    except os_adapter.NotPrivate:
+        raise ValueError("Socket directory must be owned by this user with mode 0700") from None
+    with os_adapter.exclusive_lock(path.with_suffix(".lock")):
         if path.exists() or path.is_symlink():
             if not stat.S_ISSOCK(path.lstat().st_mode):
                 raise ValueError("Refusing to replace a non-socket path")

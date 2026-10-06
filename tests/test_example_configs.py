@@ -6,6 +6,7 @@ from local_ai_connector.adapter_socket import SocketAdapter
 from local_ai_connector.claude_binding import compatibility_issues
 from local_ai_connector.conversations import Conversations
 from local_ai_connector.wakeup import CommandAdapter, parse_config
+import pytest
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples/configs"
 PEERS = {"gpt", "codex_desktop", "gemini", "claude_code"}

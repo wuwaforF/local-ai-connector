@@ -12,6 +12,8 @@
 | HTTPX | 0.28.1 | BSD-3-Clause |
 | HTTPX2（MCP 依赖） | 2.13.0 | BSD-3-Clause |
 | Pydantic | 2.13.5 | MIT |
+| tomlkit（编辑 Codex 配置并保留注释） | 0.15.1 | MIT |
+| pywin32（仅 Windows：文件访问控制检查） | 312 | PSF-2.0 |
 
 完整依赖版本与包哈希保存在 `uv.lock`。各依赖保留其独立许可证；主体 MIT 许可证不替代第三方条款。
 

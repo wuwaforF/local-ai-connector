@@ -24,3 +24,7 @@ deployment/codex-desktop-shared-server-experiment.command
 deployment/enable-codex-creation-hook-probe.command
 integrations/codex_desktop/live_probe.py
 tests/test_codex_desktop_live_probe.py
+
+# Antigravity identity diagnostic workspaces (logs and isolated test profiles).
+.probe/
+.connector-home/

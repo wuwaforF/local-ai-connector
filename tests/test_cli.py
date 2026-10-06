@@ -1,10 +1,10 @@
 import json
-import stat
 import sys
 import tomllib
 
 import pytest
 
+from local_ai_connector import os_adapter
 from local_ai_connector.cli import main
 
 
@@ -20,7 +20,7 @@ def test_multi_peer_init_and_client_configs(tmp_path, monkeypatch, capsys):
         config = json.loads(path.read_text())
         assert config["peer"] == peer and config["token"] == token
         assert config["client"] == ("codex" if peer == "native" else "generic")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert os_adapter.is_private(path)
     original = (tmp_path / "writer.json").read_bytes()
     for client in ("generic", "codex", "zcode"):
         monkeypatch.setattr(sys, "argv", ["connector", "--data", str(tmp_path), "client-config", "--peer", "writer", "--client", client])

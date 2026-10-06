@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 from local_ai_connector.wakeup import CommandAdapter, load_config
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "integrations/codex_desktop"))
 from deployment_config import MCP_SERVER_NAME, project_mcp_config, wake_binding

@@ -1,17 +1,25 @@
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import os
 from pathlib import Path
 import secrets
 import stat
 
+from . import os_adapter
 from .core import ConnectorError, require
+
+
+def _require_safe_platform():
+    # The guarantees below rest on O_NOFOLLOW and a dir_fd chain; no equivalent is verified elsewhere.
+    require(os_adapter.supports("safe_workspace_write"), "unsupported_platform",
+            "Controlled workspace writes are not supported on this platform")
 
 
 @contextmanager
 def write_lease(root: Path):
     """All connector writes to a workspace serialize on a permanent lock inode."""
+    _require_safe_platform()
+    import fcntl
     root = root.resolve(strict=True)
     fd=os.open(root/".connector-write.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     try:
@@ -26,6 +34,7 @@ def write_lease(root: Path):
 
 @contextmanager
 def parent_fd(root: Path, relative: str):
+    _require_safe_platform()
     parts=relative.split("/")
     require(parts and all(p and p not in (".","..") and not p.startswith(".") and "\\" not in p and "\0" not in p for p in parts), "invalid_path", "须使用工作区内的可见相对文件路径")
     fd=os.open(root.resolve(strict=True),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)

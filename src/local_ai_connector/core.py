@@ -67,6 +67,8 @@ class Broker:
             self.db.commit()
         from .conversations import Conversations
         self.conversations = Conversations(self.db, conversations)
+        from .bindings import Bindings
+        self.bindings = Bindings(self.db, self.clock)
         from .workflows import Workflows
         self.workflows = Workflows(self)
 
@@ -154,7 +156,7 @@ class Broker:
                 'scope': {'requester': peer, 'responder': target}, 'task_authorized': False,
                 'detail': 'Routing metadata only. Submit each new task with quick_bind and a new initiating-host approval.'}
 
-    async def open(self, peer, target, body, key, ttl_seconds=3600, idle_seconds=120, conversation_mode="existing", *, _archive=None, selected_conversation=None, binding_only=False):
+    async def open(self, peer, target, body, key, ttl_seconds=3600, idle_seconds=120, conversation_mode="existing", *, _archive=None, selected_conversation=None, binding_only=False, expected_revision=None, expected_label=None, require_target=False):
         self.expire()
         require(isinstance(body, str) and 0 < len(body.strip()) <= 16000, "invalid_body", "求助内容须为 1 至 16000 字符")
         require(isinstance(key, str) and 0 < len(key) <= 200, "invalid_key", "每次新操作需要稳定且唯一的去重编号")
@@ -179,7 +181,11 @@ class Broker:
             require(old["responder"] == target and old["original"] == body and old["expires"]-old["created"]==ttl_seconds and old["idle_seconds"]==idle_seconds, "idempotency_conflict", "同一去重编号不能用于不同求助或期限")
             require(self.conversations.describe(old["id"])["mode"] == conversation_mode,
                     "idempotency_conflict", "同一去重编号不能改变新建或既有聊天模式")
+            offered = self.bindings.target(old["id"])
+            require(expected_revision is None or (offered is not None and offered["revision"] == expected_revision),
+                    "idempotency_conflict", "A request key cannot change the bound chat revision; use a new key.")
             return {**dict(old), "conversation": self.conversations.describe(old["id"]),
+                    **self._target_fields(old["id"]),
                     **({"operation": "archive"} if previous_archive else {})}
         if selected_conversation is not None:
             require(conversation_mode == 'existing' and _archive is None,
@@ -194,12 +200,19 @@ class Broker:
         with self.db:
             self.db.execute("INSERT INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?)", (cid, peer, target, body, "pending", now, now+ttl_seconds, idle_seconds, None, key, None))
             self.conversations.open(cid, target, conversation_mode, selected_conversation, binding_only=binding_only)
+            if not binding_only and not _archive:
+                # The chat shown for approval; pinned only if it is unchanged when approved.
+                self.bindings.offer(cid, target, expected_revision, expected_label, require_target)
             if _archive:
                 self.db.execute("INSERT INTO native_archives VALUES (?,?,?,?,?,NULL)",
                                 (cid, _archive["source_channel"], _archive["registration"], _archive["target"], "pending"))
         await self.notify()
-        return {**self.channel(cid), "conversation": self.conversations.describe(cid),
+        return {**self.channel(cid), "conversation": self.conversations.describe(cid), **self._target_fields(cid),
                 **({"operation": "archive"} if _archive else {})}
+
+    def _target_fields(self, cid):
+        view = self.bindings.target_view(cid)
+        return {"target_chat": view} if view is not None else {}
 
     async def archive_open(self, peer, source_channel, conversation_id, key):
         from .conversations import DIRECT_PROVIDER, canonical
@@ -253,7 +266,7 @@ class Broker:
             previous = self.db.execute("SELECT decision,source FROM approval_decisions WHERE channel=?", (cid,)).fetchone()
             require(previous is None or (previous[0] == decision and previous[1] == host_approval_source), "invalid_state", "此任务已有不同的审批决定或来源")
         if c["status"] == ("active" if approve else "denied"):
-            return c
+            return {**c, **self._target_fields(cid)}
         if approve and c['status'] == 'closed' and c['approved_at'] is not None and self.conversations.binding_request(cid) is not None:
             return c
         require(c["status"] == "pending", "invalid_state", "此求助已处理或已到期")
@@ -280,10 +293,19 @@ class Broker:
             require(self.db.execute("SELECT 1 FROM native_operations WHERE channel=? AND state IN ('intent','ambiguous')",
                                     (source["id"],)).fetchone() is None,
                     "native_execution_unconfirmed", "A native operation is still running or has an unknown result")
+        if approve and self.bindings.pin_conflict(cid):
+            # The approval showed a chat that is no longer bound. Never redirect: end the task.
+            with self.db:
+                self.db.execute("UPDATE channels SET status='revoked' WHERE id=? AND status='pending'", (cid,))
+            self.record_incident(c["requester"], "target_binding_changed", cid)
+            await self.notify()
+            raise ConnectorError("target_binding_changed",
+                                 "The bound chat changed before approval; nothing was delivered. Submit the task again.")
         with self.db:
             self.db.execute("UPDATE channels SET status=? WHERE id=?", (('closed' if binding else 'active') if approve else 'denied', cid))
             if approve:
                 self.db.execute("UPDATE channels SET approved_at=? WHERE id=?", (self.clock(),cid))
+                self.bindings.pin(cid)
                 if binding:
                     self.conversations.remember_binding(c)
                 else:
@@ -296,11 +318,12 @@ class Broker:
                 self.db.execute("INSERT INTO approval_decisions VALUES (?,?,?,?,?)",
                                 (cid, host_approval_source, peer, decision, self.clock()))
         await self.notify()
-        return self.channel(cid)
+        return {**self.channel(cid), **self._target_fields(cid)}
 
-    async def send(self, peer, cid, kind, body, key, reply_to=None):
+    async def send(self, peer, cid, kind, body, key, reply_to=None, *, session=None):
         self.expire()
         c = self.channel(cid, peer)
+        self.bindings.require_session(c, peer, session)
         self.conversations.require_active(cid)
         require(kind in ("question", "answer"), "invalid_kind", "消息类型须为 question 或 answer")
         require(isinstance(body, str) and 0 < len(body.strip()) <= 16000, "invalid_body", "消息须为 1 至 16000 字符")
@@ -379,8 +402,10 @@ class Broker:
         await self.notify()
         return self.channel(cid)
 
-    async def receive(self, peer, cid=None, after=0, timeout=300):
+    async def receive(self, peer, cid=None, after=0, timeout=300, *, session=None):
         require(isinstance(after,int) and after>=0 and 0<=timeout<=3600, "invalid_wait", "等待游标或时限无效")
+        if cid:
+            self.bindings.require_session(self.channel(cid, peer), peer, session)
         deadline = asyncio.get_running_loop().time()+timeout
         async with self.changed:
             while True:
@@ -391,13 +416,15 @@ class Broker:
                 blocked = self.workflows.blocked_channels(peer) if cid is None else []
                 rows = self.db.execute("""SELECT m.* FROM messages m JOIN channels c ON c.id=m.channel
                     LEFT JOIN native_conversations n ON n.channel=c.id
+                    LEFT JOIN task_targets t ON t.channel=c.id
                     WHERE m.recipient=? AND m.seq>? AND (? IS NULL OR m.channel=?)
                     AND m.channel NOT IN (SELECT value FROM json_each(?))
+                    AND (t.channel IS NULL OR m.recipient!=c.responder OR t.session=?)
                     AND c.status='active' AND (m.recipient!=c.responder OR (
                         NOT EXISTS (SELECT 1 FROM native_archives a WHERE a.request_channel=c.id) AND
                         (COALESCE(json_extract(n.registration,'$.provider'),'')!='antigravity_sidecar' OR
                          (m.channel=? AND n.thread_id IS NOT NULL AND n.lifecycle='active'))))
-                    ORDER BY m.seq LIMIT 100""", (peer,after,cid,cid,json.dumps([b["channel"] for b in blocked]),cid)).fetchall()
+                    ORDER BY m.seq LIMIT 100""", (peer,after,cid,cid,json.dumps([b["channel"] for b in blocked]),session,cid)).fetchall()
                 if rows or blocked or (c and c["status"] not in ("active","pending")):
                     with self.db:
                         messages = [self.conversations.delivery(dict(r)) for r in rows]
@@ -422,7 +449,7 @@ class Broker:
         self.expire()
         c = self.channel(cid)
         require(c["requester"] == peer, "forbidden", "仅任务发起端点可以读取委派结果")
-        result = {"state": c["status"], "channel": cid}
+        result = {"state": c["status"], "channel": cid, **self._target_fields(cid)}
         binding = self.conversations.binding_request(cid)
         if binding is not None:
             saved = self.conversations.saved_binding(peer, c['responder'])
@@ -486,14 +513,15 @@ class Broker:
                 logger.exception("delivery observer failed for peer %s", peer)
                 self.record_incident(peer, "observer_error", f"{type(exc).__name__}: {exc}"[:500])
 
-    def snapshot(self, peer=None):
+    def snapshot(self, peer=None, session=None):
         self.expire()
         rows = self.db.execute("SELECT * FROM channels WHERE ? IS NULL OR requester=? OR (responder=? AND approved_at IS NOT NULL) ORDER BY created DESC", (peer,peer,peer)).fetchall()
         incidents=self.db.execute("SELECT * FROM incidents WHERE ? IS NULL OR peer=? ORDER BY created DESC LIMIT 20",(peer,peer)).fetchall()
         peers = [r[0] for r in self.db.execute("SELECT id FROM peers ORDER BY id")]
         workers = [{"id": p, **self.profiles.get(p, {}), "availability": "unknown",
                     "conversation_modes": ["existing", "new"] if p in self.conversations.registrations else ["existing"],
-                    **({"cleanup_actions": ["archive"]} if self.conversations.registrations.get(p, {}).get("provider") == "antigravity_sidecar" else {})}
+                    **({"cleanup_actions": ["archive"]} if self.conversations.registrations.get(p, {}).get("provider") == "antigravity_sidecar" else {}),
+                    **({"binding": self.bindings.describe(p, session if p == peer else None)} if p in self.bindings.bindable else {})}
                    for p in peers]
         channels = []
         for row in rows:
@@ -504,9 +532,28 @@ class Broker:
             archive = self.conversations.archive(row["id"])
             if archive:
                 channel.update(operation="archive", source_channel=archive["source_channel"], archive_state=archive["state"])
+            channel.update(self._target_fields(row["id"]))
             channels.append(channel)
         return {"channels":channels, "peers": peers, "workers": workers,
                 "self": peer, "incidents":[dict(r) for r in incidents]}
+
+    async def request_binding(self, peer, session, label, key):
+        result = self.bindings.request(peer, session, label, key)
+        await self.notify()
+        return result
+
+    async def decide_binding(self, peer, session, request_id, decision, source):
+        result = self.bindings.decide(peer, session, request_id, decision, source)
+        await self.notify()
+        return result
+
+    async def unbind(self, peer, session=None, *, admin=False):
+        result = self.bindings.unbind(peer, session, admin=admin)
+        await self.notify()
+        return result
+
+    def enroll(self, peer, session, secret):
+        return self.bindings.credentials.enroll(peer, session, secret)
 
     def record_incident(self,peer,code,detail):
         with self.db:

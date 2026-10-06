@@ -10,12 +10,13 @@ Include the affected version or commit, the steps to reproduce, the host apps an
 
 ## Supported versions
 
-Only the latest commit on the default branch is supported during the developer preview.
+Only the latest commit on the default branch is supported during the public preview.
 
 ## In scope
 
 - A task becoming visible to a worker without approval in the initiating desktop, or approval obtained through tool arguments, model output or an error path.
 - Delivery to a chat other than the registered target, or follow-up rounds that extend or bypass the original authorization.
+- A chat other than the one a task is pinned to receiving or answering it, or a binding made without the host-supplied chat identity.
 - Disclosure of endpoint or approval credentials, or access to another endpoint's channels.
 - Command execution through wake-up configuration, bridges or deployment scripts beyond what the owner configured.
 - Bypassing the local-only HTTP protections (Origin and Host checks, Bearer authentication).
@@ -32,7 +33,7 @@ Only the latest commit on the default branch is supported during the developer p
 
 请勿公开提交安全问题。请在 GitHub 仓库的 **Security → Report a vulnerability** 私下报告，并附上版本、复现步骤和涉及的宿主版本，同时隐去真实 ID、凭据和本机路径。
 
-开发预览期间只支持默认分支的最新提交。
+公开预览期间只支持默认分支的最新提交。
 
 重点范围：
 - 绕过发起端批准
