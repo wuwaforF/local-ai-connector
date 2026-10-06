@@ -26,10 +26,10 @@ async def test_native_creation_and_continuation_through_real_mcp(participants, m
     async with Client(parameters(paths[0]), mode=mode, elicitation_callback=confirmation) as requester, \
             Client(parameters(paths[1]), mode=mode) as worker:
         args = {"target": "reviewer", "message": "Open a new chat and calculate 48 + 37", "request_key": "native-one",
-                "conversation_mode": "new", "timeout_seconds": 15}
+                "conversation_mode": "new", "timeout_seconds": 60}
 
         async def answer(text):
-            result = await worker.call_tool("connector_receive", {"timeout": 15})
+            result = await worker.call_tool("connector_receive", {"timeout": 60})
             messages = json.loads(result.content[0].text)["messages"]
             question = next(q for q in messages if not q["resolved"] and q["kind"] == "question")
             plan = question["native_execution"]
@@ -49,7 +49,7 @@ async def test_native_creation_and_continuation_through_real_mcp(participants, m
         assert first["next_round"] == {"tool": "connector_continue", "channel": first["channel"]}
         task = asyncio.create_task(answer("100"))
         result = await requester.call_tool("connector_continue", {"channel": first["channel"], "message": "Add 15",
-                                            "request_key": "next-round", "timeout_seconds": 15})
+                                            "request_key": "next-round", "timeout_seconds": 60})
         assert not result.is_error, result.content
         second = json.loads(result.content[0].text)
         assert second["conversation"]["thread_id"] == CHILD

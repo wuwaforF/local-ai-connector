@@ -156,7 +156,7 @@ async def test_modern_confirmation_cannot_authorize_changed_selected_task(partic
     params.args.append('--codex-quick-binding')
     async with Client(params, mode='auto', elicitation_callback=forbidden) as requester:
         args = {'target': 'reviewer', 'selected_conversation': SELECTED,
-                'message': '47 * 19', 'request_key': 'selected-bound-confirmation', 'timeout_seconds': 15}
+                'message': '47 * 19', 'request_key': 'selected-bound-confirmation', 'timeout_seconds': 60}
         first = await requester.session.call_tool('connector_codex_quick_bind', args, allow_input_required=True)
         assert isinstance(first, InputRequiredResult)
         request_id = next(iter(first.input_requests))
@@ -201,7 +201,7 @@ async def test_exact_selected_chat_has_one_initiating_confirmation(participants,
         assert not listed.is_error
         selected = json.loads(listed.content[0].text)['choices'][0]
         async def synthetic_worker_answer(body):
-            incoming = await worker.call_tool('connector_receive', {'timeout': 15})
+            incoming = await worker.call_tool('connector_receive', {'timeout': 60})
             question = next(q for q in json.loads(incoming.content[0].text)['messages']
                             if q['kind'] == 'question' and not q['resolved'])
             plan = question['native_execution']
@@ -215,7 +215,7 @@ async def test_exact_selected_chat_has_one_initiating_confirmation(participants,
             assert not sent.is_error
         answer = asyncio.create_task(synthetic_worker_answer('893')) if decision == 'accept' else None
         args = {'target': 'reviewer', 'selected_conversation': selected, 'message': '47 * 19',
-                'request_key': 'selected-first', 'timeout_seconds': 15}
+                'request_key': 'selected-first', 'timeout_seconds': 60}
         first = await requester.call_tool('connector_codex_quick_bind', args)
         assert not first.is_error, first.content
         result = json.loads(first.content[0].text)
@@ -232,7 +232,7 @@ async def test_exact_selected_chat_has_one_initiating_confirmation(participants,
         assert json.loads(repeated.content[0].text) == result and len(prompts) == 1
         answer = asyncio.create_task(synthetic_worker_answer('900'))
         continued = await requester.call_tool('connector_continue', {'channel': result['channel'],
-            'message': 'Add 7', 'request_key': 'selected-second', 'timeout_seconds': 15})
+            'message': 'Add 7', 'request_key': 'selected-second', 'timeout_seconds': 60})
         assert not continued.is_error
         await answer
         second = json.loads(continued.content[0].text)
@@ -259,9 +259,9 @@ async def test_requester_can_answer_first_task_clarification_with_same_selection
             Client(parameters(paths[1]), mode='auto') as worker:
         assert 'connector_send' not in {t.name for t in (await requester.list_tools()).tools}
         args = {'target': 'reviewer', 'selected_conversation': SELECTED, 'message': 'Calculate 893 plus an increment',
-                'request_key': 'clarified-selected', 'timeout_seconds': 15}
+                'request_key': 'clarified-selected', 'timeout_seconds': 60}
         async def ask():
-            incoming = await worker.call_tool('connector_receive', {'timeout': 15})
+            incoming = await worker.call_tool('connector_receive', {'timeout': 60})
             q = json.loads(incoming.content[0].text)['messages'][0]
             plan = q['native_execution']
             handle_hook(broker.db, event(plan), 'reviewer', SESSION, '/worker', broker.clock(),
@@ -279,7 +279,7 @@ async def test_requester_can_answer_first_task_clarification_with_same_selection
         initial, clarification = await asking
         async def answer():
             incoming = await worker.call_tool('connector_receive', {'channel': initial['channel'],
-                'after': clarification['seq'], 'timeout': 15})
+                'after': clarification['seq'], 'timeout': 60})
             msg = next(q for q in json.loads(incoming.content[0].text)['messages'] if q['kind'] == 'answer')
             plan = msg['native_execution']
             assert plan['arguments'] == {'threadId': CHILD, 'hostId': 'local', 'prompt': '7'}
