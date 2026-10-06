@@ -369,7 +369,10 @@ async def bind_this_chat(ctx, call, decide_binding, label, request_key, *, host_
               + "\nApproval saves routing only. It grants no task permission: each task is still approved in the "
                 "desktop that starts it, and tasks already approved stay on their original chat. "
                 "Decline or Cancel keeps the current binding.")
-    form = ElicitRequest(params=ElicitRequestFormParams(message=prompt, requested_schema={"type": "object", "properties": {}}))
+    # Like delegate: hosts such as Antigravity route forms through the tool call's progress token.
+    token = (ctx.request_context.meta or {}).get("progress_token")
+    form = ElicitRequest(params=ElicitRequestFormParams(message=prompt, requested_schema={"type": "object", "properties": {}},
+                                                        meta={"progress_token": token} if token is not None else None))
     if modern:
         responses = ctx.input_responses or {}
         if "approval" not in responses:

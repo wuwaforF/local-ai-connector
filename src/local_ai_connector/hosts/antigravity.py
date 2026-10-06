@@ -8,8 +8,11 @@ from . import HostConfigError, replace_text
 
 NAME = "antigravity"
 DISPLAY_NAME = "Antigravity"
-# No trusted chat identity reaches MCP servers, so exact-chat binding is not offered.
-ENDPOINT = {"approval_transport": "elicitation", "chat_identity": None}
+# Antigravity adds the calling conversation to each tool call's request metadata (observed on
+# 2.19.1, matching the documented hook payload's conversationId). One MCP process serves all
+# chats, so the identity is read per call.
+ENDPOINT = {"approval_transport": "elicitation",
+            "chat_identity": {"source": "meta", "path": ["antigravity.google/conversation_id"], "namespace": "antigravity"}}
 OWNED_KEYS = ("command", "args")
 PERMISSIONS = (
     "Refresh MCP servers in Antigravity (Settings > Customizations > MCP Servers) so it loads the new entry.",
@@ -17,8 +20,10 @@ PERMISSIONS = (
     "choice; setup does not grant them. Task approval is a separate form shown for every new task.",
 )
 LIMITATIONS = (
-    "Antigravity does not tell MCP servers which conversation is calling, so the connector cannot verify the "
-    "exact receiving chat. Exact-chat binding and receipt are not supported for Antigravity workers.",
+    "Chat identity comes from request metadata Antigravity adds to every MCP tool call "
+    "(antigravity.google/conversation_id). It is observed on Antigravity 2.19.1 but not publicly documented; "
+    "binding reports missing_session_identity if a host version stops sending it.",
+    "Automatic wake-up of an Antigravity chat is not available yet; the bound chat collects tasks in attended mode.",
     "Antigravity ends tool calls after about 180 seconds; long tasks started from Antigravity report 'running' "
     "and must be resumed.",
 )

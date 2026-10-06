@@ -115,8 +115,9 @@ CHAT_BINDING_INSTRUCTIONS = (
 def chat_identity_reader(spec):
     """Host-supplied identity of the calling chat for an endpoint shared by all of a host's chats.
 
-    Codex sends the thread in each tool call's metadata; Claude Code gives each chat its own MCP
-    process with the session in its environment. Model tool arguments can never set it.
+    Codex and Antigravity send the calling chat in each tool call's request metadata; Claude Code
+    gives each chat its own MCP process with the session in its environment. Model tool
+    arguments can never set either.
     """
     if spec is None:
         return None
@@ -129,12 +130,23 @@ def chat_identity_reader(spec):
             session = f"codex:{thread}" if isinstance(thread, str) else None
             return session if valid_session(session) else None
         return read
+    if (isinstance(spec, dict) and spec.get("source") == "meta" and set(spec) == {"source", "path", "namespace"}
+            and isinstance(spec["path"], list) and spec["path"] and all(isinstance(k, str) for k in spec["path"])):
+        path, namespace = spec["path"], spec["namespace"]
+
+        def read_meta(ctx):
+            value = ctx.request_context.meta or {}
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            session = f"{namespace}:{value}" if isinstance(value, str) else None
+            return session if valid_session(session) else None
+        return read_meta
     if isinstance(spec, dict) and spec.get("source") == "env" and set(spec) == {"source", "variable", "namespace"}:
         value = os.environ.get(spec["variable"])
         session = f"{spec['namespace']}:{value}" if value else None
         session = session if valid_session(session) else None
         return lambda ctx: session
-    raise ValueError("chat_identity must be codex_meta or an environment variable mapping")
+    raise ValueError("chat_identity must be codex_meta, a request metadata path or an environment variable mapping")
 
 
 def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=False, start_service=False):

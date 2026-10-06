@@ -47,7 +47,8 @@ def test_setup_creates_a_private_installation_and_preserves_unrelated_configurat
     endpoints = {h: json.loads((data / f"{h}.json").read_text()) for h in HOSTS}
     assert endpoints["codex"]["chat_identity"] == {"source": "codex_meta"}
     assert endpoints["claude"]["approval_transport"] == "host_tool_permission"
-    assert "chat_identity" not in endpoints["antigravity"]
+    assert endpoints["antigravity"]["chat_identity"] == {"source": "meta", "path": ["antigravity.google/conversation_id"],
+                                                         "namespace": "antigravity"}
     assert data.parent.parent == os_adapter.app_data_dir(environ=ctx.environ, home=ctx.home)
 
 

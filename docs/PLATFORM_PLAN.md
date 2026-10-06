@@ -187,12 +187,52 @@ WSL is reported separately:
 | | Codex | Claude Desktop Code | Antigravity |
 | --- | --- | --- | --- |
 | **Config install** | `config.toml` `[mcp_servers.<id>]` with timeouts, `enabled_tools` and per-tool `approval_mode` [doc]. `codex mcp add` cannot set timeouts, so files are edited with `tomlkit`. | `claude mcp add-json --scope user` / `claude mcp remove` [doc]. The CLI ships inside the app [obs]. | `~/.gemini/config/mcp_config.json` [doc]; no CLI |
-| **Trusted chat identity** | `_meta["x-codex-turn-metadata"]["thread_id"]` on each tool call [obs, code]. MCP servers get a sanitized environment [obs]. | `CLAUDE_CODE_SESSION_ID` in the stdio MCP child [3p changelog]; session ID in hook input [doc]. One MCP process runs per session. | **None found.** No conversation ID reaches MCP servers [obs]. |
+| **Trusted chat identity** | `_meta["x-codex-turn-metadata"]["thread_id"]` on each tool call [obs, code]. MCP servers get a sanitized environment [obs]. | `CLAUDE_CODE_SESSION_ID` in the stdio MCP child [3p changelog]; session ID in hook input [doc]. One MCP process runs per session. `_meta["antigravity.google/conversation_id"]` on each tool call [obs, 2.19.1], matching the documented hook payload's `conversationId` [doc](https://antigravity.google/docs/hooks). One MCP process serves all chats, so it is read per call. See section 4.4. |
 | **Initiating approval** | MCP form. Verified on macOS. | Native per-call tool permission. Verified on macOS. | MCP form. Shown on macOS, but hit the host's 180 s tool deadline. |
 | **Wake-up / delivery** | Desktop IPC (non-public; macOS experiment). App-server `turn/start` is documented, but sharing a thread with the desktop app is not. | Per-session inbox [doc](https://code.claude.com/docs/en/cross-session-messaging). Unix socket (auth optional) on macOS, Linux and WSL 2; named pipe with **required** token on Windows. The frame format is undocumented. Inbound controls can hold or refuse messages. | Sidecar plus `agentapi send-message` [doc](https://antigravity.google/docs/sidecars/). `agentapi` on Windows and Linux is unconfirmed. |
 
-**Consequence:** Antigravity cannot currently get exact-chat support. Its receipt cannot be tied
-to a chat until the host provides a trusted identity, and the support report will say so.
+### 4.4 Antigravity chat identity: validated on macOS (2026-10-05)
+
+An earlier version of this plan concluded that no identity reached Antigravity's MCP servers.
+That checked only the server process environment and was wrong. The identity is carried per
+call.
+
+**Probe** (`research/antigravity-identity/`, in a disposable workspace whose `.agents/` held the
+probe server and hooks; no global configuration changed). Two chats, five calls, including a full
+Antigravity restart:
+
+- Every `tools/call` carried `_meta["antigravity.google/conversation_id"]`, plus
+  `antigravity.google/artifacts_dir` and `progress_token`.
+- That value matched the documented `PreToolUse` hook `conversationId` and the hook's
+  `ANTIGRAVITY_CONVERSATION_ID` on all five calls.
+- Both chats were served by one MCP process, and conversation IDs were unchanged after the restart.
+- MCP calls reach hooks as `call_mcp_tool`, with the arguments under `Arguments`.
+- An undocumented `PreToolUse` `overwrite` replaced a model-supplied value before execution.
+
+**Connector test** (isolated profile `agtest`, entry loaded only by that workspace, and a workspace
+hook denying the live server):
+
+- Chat A bound itself through Antigravity's form (revision 1), received task t1 and answered `42`.
+  The initiator was a terminal stand-in, and each task was approved by typing `yes`.
+- Chat B's inbox showed nothing of t1. B's explicit receive and its answer for t1 were refused
+  with `wrong_session`.
+- After t2 was approved for A, B bound itself (revision 2), and t3 was approved for B.
+- After a full Antigravity restart:
+  - B saw only t3, its explicit read of t2 was refused, and it answered `10`.
+  - A saw only t2 and answered `7`.
+  - All three tasks completed at the initiator.
+- Evidence agrees across the profile database (bindings, pins, message senders, three
+  `wrong_session` incidents), the hook log (the host's conversation for every call) and both chat
+  transcripts. A change in Antigravity's per-launch browser-control URL confirms the restart.
+
+**Limits:**
+
+- The `_meta` key is undocumented and was observed on 2.19.1 only. A host version that drops it
+  makes binding fail with `missing_session_identity`; it never falls back to an unverified
+  identity.
+- The documented hook `conversationId` could serve as a second, documented source.
+- Approvals in this test were human, but the initiating side was a terminal stand-in, not a desktop.
+- Not yet run on Windows or Linux Antigravity.
 
 ## 5. How support is reported
 
@@ -339,8 +379,9 @@ combination is checked per host × OS × mode with this checklist:
 - **Claude Code inbound controls.** A worker session that bypasses permission prompts holds
   external messages, and Desktop drops them after 5 minutes. Setup never changes
   `crossSessionInbound`.
-- **Antigravity.** Its 180 s tool deadline affects initiating, and it provides no trusted chat
-  identity.
+- **Antigravity.**
+  - Its 180 s tool deadline affects initiating.
+  - Its chat identity relies on an undocumented request-metadata key (section 4.4).
 - **Preview hosts on Linux.** The Codex app (preview) and Claude Desktop (beta) are claimed as
   automated-only until stable.
 - **Windows ACL semantics.** Inherited ACLs and elevated owners must be verified on real Windows,
