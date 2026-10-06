@@ -12,8 +12,9 @@ Antigravity 的聊天审阅一段代码：
 支持的应用：Codex、Claude Desktop（Code 标签）和 Antigravity，覆盖 macOS、Windows 和 Linux，各自的支持程度见
 [当前支持情况](#当前支持情况)。
 
-> **公开预览版，尚不适合生产使用。** 目前需要让工作者聊天主动接收任务，尚未实现自动唤醒。到目前为止，真实桌面验证
-> 只覆盖 macOS 上的 Antigravity。
+> **公开预览版，尚不适合生产使用。** 按本文介绍的安装流程，已绑定的工作者聊天需要被要求时才会接收任务。要自动唤醒
+> 这个聊天，还需把已有的唤醒适配器接入本流程并重新测试。到目前为止，本流程的真实桌面验证只覆盖 macOS 上的
+> Antigravity。[早期 macOS 部署](#早期-macos-部署)采用另一种配置方式，单独说明。
 
 ## 工作方式
 
@@ -57,13 +58,15 @@ uv run local-ai-connector doctor
 
 ## 当前支持情况
 
+本表针对上文介绍的安装流程（`setup` 和自然语言绑定）。
+
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | 服务、`setup`/`doctor`/`uninstall`、批准与绑定规则 | 自动化测试 | 自动化测试 | 自动化测试 |
 | Antigravity 精确聊天绑定与隔离 | **已在真实桌面验证**（Antigravity 2.19.1） | 仅自动化测试 | 仅自动化测试 |
 | Codex 与 Claude Desktop Code 的单聊天身份 | 仅自动化测试 | 仅自动化测试 | 仅自动化测试 |
-| 从真实发起端桌面完成端到端批准 | 待验收 | 待验收 | 待验收 |
-| 自动唤醒工作者聊天 | 未实现 | 未实现 | 未实现 |
+| 在真实发起端桌面中批准 | 本流程待验收 | 待验收 | 待验收 |
+| 自动唤醒已绑定的聊天 | 尚未接入本流程 | 尚未接入；未在真实宿主测试 | 尚未接入；未在真实宿主测试 |
 
 各项的含义：
 
@@ -73,15 +76,35 @@ uv run local-ai-connector doctor
   - 重新绑定后，已批准的任务仍留在原来的聊天。
   - 重启 Antigravity 后以上结果依然成立。
 - **Windows 和 Linux** 有 CI 中的自动化测试，但尚未在真实 Antigravity 上验收（[#3](https://github.com/wuwaforF/local-ai-connector/issues/3)）。
-- **需要主动接收任务：** 目前要让工作者聊天主动接收任务，尚未实现自动唤醒（[#1](https://github.com/wuwaforF/local-ai-connector/issues/1)）。
-- **从真实发起端桌面完成的端到端批准仍待验收**（[#2](https://github.com/wuwaforF/local-ai-connector/issues/2)）。在
-  Antigravity 测试中，每个任务都由真人批准，但发起端是终端代替的。
+- **唤醒：** 按本流程，已绑定的聊天需要被要求时才会接收任务。Codex Desktop、Claude Desktop Code 和 Antigravity
+  都已有唤醒适配器，并在早期 macOS 部署中工作过。当时它们唤醒的是预先配置的固定聊天。
+  - 剩下的工作是让它们把任务送到批准时固定的那个聊天，再在真实桌面上重新测试。
+  - Windows 和 Linux 的真实宿主验收仍未完成。
+  - 跟踪于 [#1](https://github.com/wuwaforF/local-ai-connector/issues/1)。
+- **在真实发起端桌面中批准：** 早期 macOS 部署中已验收过，但本流程尚未验收
+  （[#2](https://github.com/wuwaforF/local-ai-connector/issues/2)）。在 Antigravity 双聊天测试中，每个任务都由真人
+  批准，但发起端是终端代替的。
 - **Antigravity 的会话元数据键没有公开文档。** 这个键是 `antigravity.google/conversation_id`，在 2.19.1 上观察到。
   如果某个版本不再发送它，绑定会安全失败并返回 `missing_session_identity`，不会退回到无法验证的身份
   （[#4](https://github.com/wuwaforF/local-ai-connector/issues/4)）。
 - **Codex 与 Claude** 的聊天身份尚未在真实桌面确认（[#5](https://github.com/wuwaforF/local-ai-connector/issues/5)）。
 - **不隔离你自己的程序：** 以你的操作系统用户身份运行的其他程序可以读取连接器的本机数据。它防的是其他用户，不防同一
   用户的进程。
+
+## 早期 macOS 部署
+
+在有 `setup` 之前，有一套 macOS 部署通过维护者脚本和手动配置，把每个工作者连接到预先配置的聊天。在这套部署上的真实
+桌面测试结果：
+
+- **Codex → Antigravity：** 自动唤醒、返回真实回答，以及追问后的续接。
+- **Codex → Claude Desktop Code：** 自动唤醒并返回真实回答。
+- **Claude → Antigravity：** 自动唤醒并返回真实回答。那一次的批准是在 Codex 中确认的；之后的另一次测试确认了只需在
+  Claude 中点一次批准。
+
+这些结果只适用于那套部署。用 `setup` 新安装的连接器目前还不具备这些能力。
+
+- 手动配置方式见[参考说明](docs/REFERENCE.zh-CN.md)。
+- 带日期的验收记录见 [docs/PROJECT_NOTES.md](docs/PROJECT_NOTES.md)（中文），对应的证据文件由维护者保存，没有公开。
 
 ## 功能
 
@@ -95,8 +118,8 @@ uv run local-ai-connector doctor
 
 **计划中**
 
-- 自动唤醒已绑定的聊天（[#1](https://github.com/wuwaforF/local-ai-connector/issues/1)）。
-- 在所有平台完成真实桌面验收（[#2](https://github.com/wuwaforF/local-ai-connector/issues/2)、[#3](https://github.com/wuwaforF/local-ai-connector/issues/3)、[#5](https://github.com/wuwaforF/local-ai-connector/issues/5)）。
+- 本流程的唤醒：把已有适配器接入批准时固定的聊天，并在所有平台重新测试（[#1](https://github.com/wuwaforF/local-ai-connector/issues/1)）。
+- 在所有平台完成本流程的真实桌面验收（[#2](https://github.com/wuwaforF/local-ai-connector/issues/2)、[#3](https://github.com/wuwaforF/local-ai-connector/issues/3)、[#5](https://github.com/wuwaforF/local-ai-connector/issues/5)）。
 - 登录时自动启动（[#6](https://github.com/wuwaforF/local-ai-connector/issues/6)）。
 - 从发布包安装（[#9](https://github.com/wuwaforF/local-ai-connector/issues/9)）。
 - 英文命令行提示（[#8](https://github.com/wuwaforF/local-ai-connector/issues/8)）。

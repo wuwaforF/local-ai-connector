@@ -12,8 +12,10 @@ own computer. For example, a Claude chat can ask an Antigravity chat to review s
 Supported apps: Codex, Claude Desktop (Code tab) and Antigravity, on macOS, Windows and Linux, with the support
 levels listed under [Current support](#current-support).
 
-> **Public preview, not production-ready.** A worker chat must currently be asked to collect its tasks; automatic
-> wake-up is not implemented yet. Real-desktop verification so far covers Antigravity on macOS only.
+> **Public preview, not production-ready.** With the setup flow described here, a bound worker chat collects its
+> tasks when asked. Waking that chat automatically still needs the existing wake adapters to be connected to this flow
+> and re-tested. Real-desktop verification of this flow so far covers Antigravity on macOS.
+> An [earlier macOS deployment](#earlier-macos-deployment) used a different setup and is described separately.
 
 ## How it works
 
@@ -60,13 +62,15 @@ After `setup`:
 
 ## Current support
 
+This table covers the setup flow documented above (`setup` and natural-language binding).
+
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Service, `setup`/`doctor`/`uninstall`, approval and binding rules | Automated tests | Automated tests | Automated tests |
 | Antigravity exact-chat binding and isolation | **Verified on a real desktop** (Antigravity 2.19.1) | Automated tests only | Automated tests only |
 | Codex and Claude Desktop Code per-chat identity | Automated tests only | Automated tests only | Automated tests only |
-| Approval from a real initiating desktop, end to end | Needs acceptance | Needs acceptance | Needs acceptance |
-| Automatic wake-up of the worker chat | Not implemented | Not implemented | Not implemented |
+| Approval in a real initiating desktop | Needs acceptance with this flow | Needs acceptance | Needs acceptance |
+| Automatic wake-up of the bound chat | Not yet connected to this flow | Not yet connected; no real-host test | Not yet connected; no real-host test |
 
 What these levels mean:
 
@@ -78,11 +82,15 @@ What these levels mean:
   - All of this still held after restarting Antigravity.
 - **Windows and Linux** have automated test coverage in CI, but no real Antigravity acceptance yet
   ([#3](https://github.com/wuwaforF/local-ai-connector/issues/3)).
-- **Task collection is explicit:** a worker chat must be asked to collect its tasks. Automatic wake-up is not
-  implemented ([#1](https://github.com/wuwaforF/local-ai-connector/issues/1)).
-- **End-to-end approval from a real initiating desktop still needs acceptance**
-  ([#2](https://github.com/wuwaforF/local-ai-connector/issues/2)). In the Antigravity test, a person approved each
-  task, but the initiating side was a terminal stand-in.
+- **Wake-up:** with this flow, a bound chat collects its tasks when asked. Wake adapters exist for Codex Desktop,
+  Claude Desktop Code and Antigravity, and they worked in the earlier macOS deployment. There they woke a fixed,
+  preconfigured chat.
+  - The remaining work is to deliver to the chat pinned when a task is approved, then re-test on real desktops.
+  - Windows and Linux real-host acceptance is still outstanding.
+  - Tracked in [#1](https://github.com/wuwaforF/local-ai-connector/issues/1).
+- **Approval in a real initiating desktop:** this was accepted in the earlier macOS deployment, but not yet with this
+  flow ([#2](https://github.com/wuwaforF/local-ai-connector/issues/2)). In the Antigravity two-chat test, a person
+  approved each task, but the initiating side was a terminal stand-in.
 - **Antigravity's conversation metadata key is undocumented.** It is `antigravity.google/conversation_id`, observed
   on 2.19.1. If a version stops sending it, binding fails safely with `missing_session_identity` and never falls
   back to an unverified identity ([#4](https://github.com/wuwaforF/local-ai-connector/issues/4)).
@@ -90,6 +98,22 @@ What these levels mean:
   ([#5](https://github.com/wuwaforF/local-ai-connector/issues/5)).
 - **Not isolated from your own programs:** other programs running as your own OS user can read the connector's
   local data. It is protected from other users, not from processes of the same user.
+
+## Earlier macOS deployment
+
+Before `setup` existed, a macOS deployment wired each worker to a preconfigured chat, using maintainer scripts and
+manual configuration. Real-desktop runs on that deployment showed:
+
+- **Codex → Antigravity:** automatic wake-up, a real answer, and a follow-up continuation.
+- **Codex → Claude Desktop Code:** automatic wake-up and a real answer.
+- **Claude → Antigravity:** automatic wake-up and a real answer. In that run, approval was confirmed in Codex; a later
+  run confirmed approval with a single click in Claude.
+
+These results apply to that deployment only. A fresh installation made with `setup` does not provide them yet.
+
+- The manual setup is described in the [Reference](docs/REFERENCE.md).
+- The dated acceptance records are in [docs/PROJECT_NOTES.md](docs/PROJECT_NOTES.md), in Chinese. Their evidence
+  files are kept by the maintainer and are not published.
 
 ## Capabilities
 
@@ -103,8 +127,9 @@ What these levels mean:
 
 **Planned**
 
-- Automatic wake-up of the bound chat ([#1](https://github.com/wuwaforF/local-ai-connector/issues/1)).
-- Real-desktop acceptance on all platforms
+- Wake-up for this flow: connect the existing adapters to the chat pinned at approval and re-test them on all
+  platforms ([#1](https://github.com/wuwaforF/local-ai-connector/issues/1)).
+- Real-desktop acceptance of this flow on all platforms
   ([#2](https://github.com/wuwaforF/local-ai-connector/issues/2),
   [#3](https://github.com/wuwaforF/local-ai-connector/issues/3),
   [#5](https://github.com/wuwaforF/local-ai-connector/issues/5)).
