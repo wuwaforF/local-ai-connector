@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import re
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -22,6 +24,7 @@ from local_ai_connector.wakeup import WAKE_TEXT
 
 DEFAULT_SOCKET = Path.home() / ".codex" / "ipc" / "ipc.sock"
 DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-ai-connector" / "codex-desktop-dispatches"
+DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 MAX_WAKE_TEXT = 1000
 TURN_START_VERSION = 2
 
@@ -44,6 +47,28 @@ def _target(value: object) -> dict:
     if not isinstance(workspace, str) or not Path(workspace).is_absolute() or "\0" in workspace:
         raise BridgeError("rejected", "The pinned workspace must be an absolute path")
     return {"thread_id": thread_id, "workspace": workspace}
+
+
+def _archived(thread_id: str, codex_home: Path) -> bool:
+    """Read Codex's own thread record. Desktop IPC cannot tell an archived thread from
+    an unloaded one, and navigating to an archived thread never loads it. The schema is
+    not documented, so anything unexpected means "not known to be archived"."""
+    if not codex_home.is_absolute():
+        return False
+    stores = []
+    for path in codex_home.glob("state_*.sqlite"):
+        version = path.stem.removeprefix("state_")
+        if version.isdigit():
+            stores.append((int(version), path))
+    for _version, path in sorted(stores, reverse=True):
+        try:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+                row = db.execute("SELECT archived FROM threads WHERE id=?", (thread_id,)).fetchone()
+        except sqlite3.Error:
+            continue
+        if row is not None:
+            return row[0] == 1
+    return False
 
 
 def _state_directory(path: Path) -> Path:
@@ -196,7 +221,7 @@ def _start_turn(connection, client_id: str, owner_id: str, target: dict,
 
 
 def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
-           state_dir: Path = DEFAULT_STATE_DIR) -> dict:
+           state_dir: Path = DEFAULT_STATE_DIR, codex_home: Path | None = None) -> dict:
     side_effect_started = False
     try:
         if not isinstance(request, dict):
@@ -214,6 +239,8 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
         if set(request) != expected_fields:
             raise BridgeError("rejected", "Unexpected bridge request fields")
         target = _target(request.get("target"))
+        if op != "reconcile" and _archived(target["thread_id"], codex_home or DEFAULT_CODEX_HOME):
+            raise BridgeError("archived", "The pinned Codex Desktop thread is archived; unarchive it or pin another chat")
 
         if op == "restore":
             # A target can become loaded since the dispatcher's last check. Opening it
