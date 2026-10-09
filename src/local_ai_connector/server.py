@@ -104,7 +104,7 @@ def create_app(data: Path):
             except (ValueError, OSError) as exc:
                 raise ConnectorError("workflow_binding_invalid", "Cannot verify configured workflow worker binding") from exc
             if peer in bindings:
-                target = bindings[peer].target
+                target = "pinned" if bindings[peer].pinned else bindings[peer].target
         return {"wake_target": target, "native_registration": broker.conversations.registrations.get(peer)}
 
     broker.workflows.identity = workflow_identity

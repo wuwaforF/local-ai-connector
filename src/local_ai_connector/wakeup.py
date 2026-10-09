@@ -167,6 +167,8 @@ class Binding:
     adapter: WakeAdapter
     suspended: str | None = None  # set when the host reports a different target
     restore_enabled: bool = False
+    # Wake the chat each task was pinned to at approval ({"session": ...}) instead of `target`.
+    pinned: bool = False
 
 
 class WakeStore:
@@ -374,10 +376,39 @@ class Dispatcher:
             return False
         return True
 
+    def _target_for(self, binding, channels):
+        """The wake target for these channels: the configured one, or the single chat they were
+        pinned to at approval. None when a channel has no pin or the channels name different chats."""
+        if not binding.pinned:
+            return binding.target
+        sessions = set()
+        for channel in channels:
+            pinned = self.broker.bindings.target(channel)
+            if pinned is None or pinned["pinned_at"] is None or pinned["endpoint"] != binding.peer:
+                return None
+            sessions.add(pinned["session"])
+        return {"session": sessions.pop()} if len(sessions) == 1 else None
+
+    def _one_target(self, binding, rows, target=None):
+        """Ready rows that wake the same chat, by default the one pinned for the earliest row."""
+        if not binding.pinned:
+            return rows
+        batch = []
+        for row in rows:
+            row_target = self._target_for(binding, [row["channel"]])
+            if row_target is None:
+                self.incident(binding.peer, "wake_target_unpinned", "a task has no chat pinned at approval; it is not woken")
+                continue
+            target = target or row_target
+            if row_target == target:
+                batch.append(row)
+        return batch
+
     def _binding_matches(self, binding, target, channels):
         if not self._workflow_allowed(binding, channels):
             return False
-        if target != json.dumps(binding.target, sort_keys=True):
+        expected = self._target_for(binding, channels)
+        if expected is None or target != json.dumps(expected, sort_keys=True):
             return False
         if any(self.store.channel_target(channel, binding.peer) != target for channel in channels):
             return False
@@ -390,7 +421,8 @@ class Dispatcher:
             binding.suspended = "stale_target"
         target = self.store.db.execute("SELECT target FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()[0]
         isolated = False
-        if not workflow_allowed and target == json.dumps(binding.target, sort_keys=True) and all(
+        expected = self._target_for(binding, channels)
+        if not workflow_allowed and expected is not None and target == json.dumps(expected, sort_keys=True) and all(
                 self.store.channel_target(channel, binding.peer) == target for channel in channels):
             from .core import ConnectorError
             unaffected = []
@@ -596,35 +628,36 @@ class Dispatcher:
     async def _maybe_dispatch(self, binding):
         peer = binding.peer
         ready, pending = self._candidates(peer)
+        ready = self._one_target(binding, ready)
         if not ready or self.clock() < self.not_before.get(peer, 0):
             return
         channels = {row["channel"] for row in ready}
         if not self._workflow_allowed(binding, channels):
             return
+        target = dict(self._target_for(binding, channels))
         if any(self.store.channel_target(channel, peer) is not None and
-               self.store.channel_target(channel, peer) != json.dumps(binding.target, sort_keys=True) for channel in channels):
+               self.store.channel_target(channel, peer) != json.dumps(target, sort_keys=True) for channel in channels):
             binding.suspended = "stale_target"
             self.broker.record_incident(peer, "wake_stale_target", "task target binding changed; no replacement session was used")
             return
         # Pin the approved target before any preparation can navigate the host UI.
-        target = dict(binding.target)
         if not self.store.pin_channels(channels, peer, target):
             binding.suspended = "stale_target"
             return
-        if await self._gate(binding, [r["id"] for r in ready]) != "go":
+        if await self._gate(binding, target, [r["id"] for r in ready]) != "go":
             return
         # Authorization re-check and intent persistence happen with no await in between,
         # and _send() invokes the adapter without any further await before it.
         ready, _ = self._candidates(peer)
+        ready = self._one_target(binding, ready, target)
         if not ready:
             return
         channels = {row["channel"] for row in ready}
-        if not self.store.pin_channels(channels, peer, binding.target):
+        if not self.store.pin_channels(channels, peer, target):
             binding.suspended = "stale_target"
             self.broker.record_incident(peer, "wake_stale_target", "task target binding changed; no replacement session was used")
             return
-        did = self.store.create(peer, binding.target, [r["id"] for r in ready], ready[0]["seq"] - 1,
-                                self.clock())
+        did = self.store.create(peer, target, [r["id"] for r in ready], ready[0]["seq"] - 1, self.clock())
         await self._send(binding, did, ready[0]["seq"] - 1)
 
     async def _attempt(self, binding, did, after_seq):
@@ -634,7 +667,7 @@ class Dispatcher:
         if row is None or not self._binding_matches(binding, row[0], channels):
             self._stale_binding(binding, did)
             return
-        gate = await self._gate(binding, self.store.messages(did))
+        gate = await self._gate(binding, json.loads(row[0]), self.store.messages(did))
         now = self.clock()
         if gate == "stale":
             self.store.move(did, "stale_target", now, "host reported a different target before retry")
@@ -683,11 +716,11 @@ class Dispatcher:
             return "defer"
         if not self._preparation_authorized(binding, target, message_ids):
             return "defer"
-        return await self._gate(binding, message_ids, allow_restore=False)
+        return await self._gate(binding, target, message_ids, allow_restore=False)
 
-    async def _gate(self, binding, message_ids=None, *, allow_restore=True):
+    async def _gate(self, binding, target, message_ids=None, *, allow_restore=True):
         """Read-only readiness checks; authorized cold recovery is an explicit opt-in."""
-        peer, target = binding.peer, dict(binding.target)
+        peer, target = binding.peer, dict(target)
         try:
             confirmed = await asyncio.wait_for(binding.adapter.confirm(target), self.ack_timeout)
             if message_ids is not None and not self._preparation_authorized(binding, target, message_ids):
@@ -701,7 +734,9 @@ class Dispatcher:
             kind = exc.kind if isinstance(exc, AdapterError) else "unavailable"
             if kind == "stale_target":
                 binding.suspended = "stale_target"
-                self.broker.record_incident(peer, "wake_stale_target", "binding suspended until wakeup.json is corrected")
+                self.broker.record_incident(peer, "wake_stale_target",
+                                            "host reported a different chat than the pinned one; wake-up suspended until restart"
+                                            if binding.pinned else "binding suspended until wakeup.json is corrected")
                 return "stale"
             # An archived chat cannot be woken or restored; keep checking so unarchiving it recovers.
             self.incident(peer, "wake_host_" + kind,
@@ -814,9 +849,12 @@ def parse_config(config, peers) -> tuple[dict[str, Binding], dict | None]:
         if not isinstance(spec, dict):
             raise WakeConfigError("binding must be an object")
         target = spec.get("target")
-        # The endpoint -> host session mapping is explicit and owner-written; there is no default target.
-        if not isinstance(target, dict) or not target or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in target.items()):
-            raise WakeConfigError("binding target must be a non-empty object of non-empty strings")
+        # The endpoint -> host session mapping is explicit: an owner-written target, or "pinned",
+        # meaning the chat each task was pinned to at approval. There is no default target.
+        pinned = target == "pinned"
+        if not pinned and (not isinstance(target, dict) or not target or not all(
+                isinstance(k, str) and isinstance(v, str) and v for k, v in target.items())):
+            raise WakeConfigError('binding target must be "pinned" or a non-empty object of non-empty strings')
         timeout = spec.get("timeout", 30)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600:
             raise WakeConfigError("binding timeout must be a number of seconds between 1 and 600")
@@ -845,7 +883,7 @@ def parse_config(config, peers) -> tuple[dict[str, Binding], dict | None]:
         restore = spec.get("restore", False)
         if not isinstance(restore, bool):
             raise WakeConfigError("binding restore must be boolean")
-        bindings[peer] = Binding(peer, target, adapter, restore_enabled=restore)
+        bindings[peer] = Binding(peer, {} if pinned else target, adapter, restore_enabled=restore, pinned=pinned)
     # options is None unless the owner set "enabled": true explicitly.
     return bindings, (options if config.get("enabled") is True else None)
 
@@ -881,6 +919,8 @@ def start(data: Path, broker, peers) -> Wakeup | None:
         bindings, options = load_config(data, peers)
         if options is None or not bindings:
             return None
+        if any(b.pinned and b.peer not in broker.bindings.bindable for b in bindings.values()):
+            raise WakeConfigError("a pinned wake target needs an endpoint with a trusted chat identity")
         return Wakeup(Dispatcher(broker, WakeStore(data / "wakeup.sqlite3"), bindings, **options))
     except (ValueError, TypeError, OSError, sqlite3.Error) as exc:
         # WakeConfigError is a ValueError. The broader types cover any malformed value that

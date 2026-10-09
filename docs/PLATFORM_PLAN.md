@@ -335,6 +335,10 @@ Not verified by Increment 1:
 ### Increment 2: automatic wake-up on the pinned target
 
 - The dispatcher reads the pinned target, and `wakeup.json` keeps only legacy static bindings.
+  - **Started 2026-10-09:** a binding with `"target": "pinned"` wakes the chat each task was
+    pinned to at approval, and the Codex Desktop bridge accepts that chat as
+    `{"session": "codex:<thread id>"}`. Automated tests only; real-desktop testing is next, in a
+    separate profile.
 - **Claude inbox adapter:**
   - On macOS, Linux and WSL 2 it uses the Unix socket without a token.
   - On Windows it uses the named pipe with a token from an explicitly enrolled session hook.
