@@ -190,6 +190,19 @@ Bridges implement `confirm`, `status`, `send`, `reconcile` and, optionally, `res
 | Claude Desktop Code | `integrations/claude_code/bridge.py` | captured session inbox; status is `unknown`, so it needs `send_when_unknown: true` |
 | Antigravity | `integrations/antigravity/bridge.py` | via `agentapi` inside an Antigravity sidecar; status `unknown` |
 
+A binding's `target` is either an owner-written object (one fixed chat) or `"pinned"`. With `"pinned"`, each task wakes the chat it was pinned to at approval, passed to the bridge as `{"session": "<namespace>:<id>"}`:
+
+- The endpoint needs a trusted chat identity (`chat_identity`), otherwise wake-up is disabled with `wakeup_config_error`.
+- Re-binding never moves an approved task: a pending retry still wakes the chat pinned for it.
+- A task with no pinned chat is not woken (`wake_target_unpinned`).
+- One wake runs at a time per endpoint, even when its tasks are pinned to different chats.
+- Only the Codex Desktop bridge accepts pinned targets so far (`{"session": "codex:<thread id>"}`). It checks the thread ID alone, and refuses an archived thread (`wake_host_archived`).
+
+```json
+{"enabled": true, "bindings": {"codex": {"adapter": "command", "target": "pinned",
+  "command": ["/path/to/.venv/bin/python", "/path/to/integrations/codex_desktop/bridge.py"]}}}
+```
+
 Native-conversation providers (`codex_ingress`, `antigravity_sidecar`) in `server.json` allow `conversation_mode="new"` and approved archiving through `connector_archive`. See [examples/configs](../examples/configs/README.md) for placeholder `wakeup.json`, provider, launcher and sidecar files.
 
 Opt-in binding helpers (MCP server flags):

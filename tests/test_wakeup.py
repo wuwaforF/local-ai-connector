@@ -11,7 +11,7 @@ import sys
 import httpx
 import pytest
 
-from local_ai_connector.core import Broker
+from local_ai_connector.core import Broker, ConnectorError
 from local_ai_connector.server import create_app
 from local_ai_connector.wakeup import (AdapterError, Binding, CommandAdapter, Dispatcher, WakeAdapter,
                                        WakeConfigError, WakeStore, load_config)
@@ -1162,3 +1162,175 @@ async def test_new_same_target_work_joins_pending_episode_after_original_revocat
     await e.d.step()
     assert e.restore_calls == [TARGET] and e.host.sent == []
     assert len(json.loads(e.store.db.execute('SELECT message_ids FROM recoveries').fetchone()[0])) == 2
+
+
+# --- pinned targets: wake the chat each task was pinned to at approval ------------------------
+CHAT_A = "codex:aaaaaaaa-0000-4000-8000-00000000000a"
+CHAT_B = "codex:bbbbbbbb-0000-4000-8000-00000000000b"
+
+
+class PinnedHost(FakeHost):
+    """A host that resolves whichever chat it is asked about and records every target it saw."""
+
+    def __init__(self):
+        super().__init__()
+        self.targets = []
+
+    async def confirm(self, target):
+        self.targets.append(("confirm", dict(target)))
+        return dict(target)
+
+    async def status(self, target):
+        self.targets.append(("status", dict(target)))
+        return self.state
+
+    async def send(self, target, dispatch_id, text):
+        self.targets.append(("send", dict(target)))
+        return await super().send(target, dispatch_id, text)
+
+
+@pytest.fixture
+def pinned(env):
+    env.broker.bindings.bindable.add("zcode")
+    env.host = PinnedHost()
+
+    def dispatcher(**options):
+        options = {"settle_seconds": 0, "busy_retry_seconds": 10, "ack_timeout": 0.05, "turn_timeout": 60, **options}
+        return Dispatcher(env.broker, env.store, {"zcode": Binding("zcode", {}, env.host, pinned=True)},
+                          clock=lambda: env.now[0], **options)
+
+    env.dispatcher = dispatcher
+    return env
+
+
+async def bind_chat(broker, session, label):
+    request = await broker.request_binding("zcode", session, label, "bind-" + label)
+    return await broker.decide_binding("zcode", session, request["request"], "accept", "host_elicitation")
+
+
+async def test_pinned_target_wakes_the_chat_pinned_at_approval(pinned):
+    e = pinned
+    await bind_chat(e.broker, CHAT_A, "Chat A")
+    channel = await approved(e.broker)
+    d = e.dispatcher()
+    await d.step()
+
+    assert [kind for kind, _ in e.host.targets] == ["confirm", "status", "send"]
+    assert all(target == {"session": CHAT_A} for _, target in e.host.targets)
+    dispatch = e.store.report()[0]
+    assert json.loads(dispatch["target"]) == {"session": CHAT_A} and dispatch["state"] == "acknowledged"
+    assert e.store.channel_target(channel, "zcode") == json.dumps({"session": CHAT_A})
+
+    received = await e.broker.receive("zcode", timeout=0, session=CHAT_A)
+    assert [m["channel"] for m in received["messages"]] == [channel]
+    assert e.store.report()[0]["state"] == "tool_executed"
+
+
+async def test_rebinding_never_moves_an_approved_task_and_new_tasks_wake_the_new_chat(pinned):
+    e = pinned
+    await bind_chat(e.broker, CHAT_A, "Chat A")
+    first = await approved(e.broker, "first")
+    await bind_chat(e.broker, CHAT_B, "Chat B")
+    second = await approved(e.broker, "second")
+    d = e.dispatcher()
+
+    await d.step()
+    sends = [target for kind, target in e.host.targets if kind == "send"]
+    assert sends == [{"session": CHAT_A}]
+    covered = {e.broker.db.execute("SELECT channel FROM messages WHERE id=?", (m,)).fetchone()[0]
+               for m in e.store.messages(e.store.report()[0]["id"])}
+    assert covered == {first}
+
+    # Chat B cannot take chat A's task; chat A retrieves and answers it.
+    with pytest.raises(ConnectorError) as refused:
+        await e.broker.receive("zcode", first, timeout=0, session=CHAT_B)
+    assert refused.value.code == "wrong_session"
+    assert (await e.broker.receive("zcode", first, timeout=0, session=CHAT_A))["messages"]
+    question = e.broker.db.execute("SELECT id FROM messages WHERE channel=?", (first,)).fetchone()[0]
+    await e.broker.send("zcode", first, "answer", "42", "a1", reply_to=question, session=CHAT_A)
+    await d.step()
+
+    sends = [target for kind, target in e.host.targets if kind == "send"]
+    assert sends == [{"session": CHAT_A}, {"session": CHAT_B}]
+    assert e.store.channel_target(second, "zcode") == json.dumps({"session": CHAT_B})
+    assert d.bindings["zcode"].suspended is None
+
+
+async def test_task_without_a_pinned_chat_is_never_woken(pinned):
+    e = pinned
+    e.broker.bindings.bindable.discard("zcode")
+    await approved(e.broker)  # authorized before the endpoint had exact-chat bindings
+    e.broker.bindings.bindable.add("zcode")
+    d = e.dispatcher()
+    await d.step()
+
+    assert e.host.targets == [] and e.store.report() == []
+    codes = {i["code"] for i in e.broker.snapshot()["incidents"]}
+    assert "wake_target_unpinned" in codes
+
+
+async def test_pinned_retry_uses_the_dispatch_target(pinned):
+    e = pinned
+    await bind_chat(e.broker, CHAT_A, "Chat A")
+    await approved(e.broker)
+    e.host.send_mode = "rejected_retryable"
+    d = e.dispatcher()
+    await d.step()
+    assert e.store.report()[0]["state"] == "retry_pending"
+
+    await bind_chat(e.broker, CHAT_B, "Chat B")  # a later re-binding must not redirect the retry
+    e.host.send_mode = "ack"
+    e.now[0] += 10
+    await d.step()
+    sends = [target for kind, target in e.host.targets if kind == "send"]
+    assert sends == [{"session": CHAT_A}, {"session": CHAT_A}]
+    assert e.store.report()[0]["state"] == "acknowledged"
+
+
+def test_pinned_target_config(tmp_path):
+    binding = {"adapter": "command", "command": ["bridge"], "target": "pinned", "restore": True}
+    write_config(tmp_path, {"enabled": True, "bindings": {"zcode": binding}})
+    bindings, _ = load_config(tmp_path, {"zcode"})
+    assert bindings["zcode"].pinned and bindings["zcode"].target == {} and bindings["zcode"].restore_enabled
+    write_config(tmp_path, {"enabled": True, "bindings": {"zcode": {**binding, "target": "bound"}}})
+    with pytest.raises(WakeConfigError):
+        load_config(tmp_path, {"zcode"})
+
+
+async def test_pinned_target_needs_an_endpoint_with_chat_identity(tmp_path):
+    write_config(tmp_path, {"enabled": True, "bindings": {"zcode": {
+        "adapter": "command", "command": ["bridge"], "target": "pinned"}}})
+    app = make_app(tmp_path)
+    async with app.router.lifespan_context(app):
+        assert getattr(app.state, "wakeup", None) is None
+        incidents = app.state.broker.snapshot()["incidents"]
+        assert any(i["code"] == "wakeup_config_error" and "trusted chat identity" in i["detail"] for i in incidents)
+
+
+async def test_server_wakes_the_chat_pinned_at_approval(tmp_path, bridge):
+    adapter = bridge("ok")
+    write_config(tmp_path, {"enabled": True, "settle_seconds": 0, "poll_seconds": 0.05,
+                            "bindings": {"zcode": {"adapter": "command", "command": adapter.command, "target": "pinned"}}})
+    (tmp_path / "server.json").write_text(json.dumps({"admin_token": "admin-secret", "peers": {"asker": "asker-secret", "zcode": "zcode-secret"}}))
+    (tmp_path / "asker.json").write_text(json.dumps({"client": "generic"}))
+    (tmp_path / "zcode.json").write_text(json.dumps({"client": "generic", "chat_identity": {"source": "codex_meta"}}))
+    app = create_app(tmp_path)
+    async with app.router.lifespan_context(app):
+        await bind_chat(app.state.broker, CHAT_A, "Chat A")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as http:
+            channel, zcode = await round_trip(http)
+            for _ in range(100):
+                report = app.state.wakeup.dispatcher.store.report()
+                if report and report[0]["state"] == "acknowledged":
+                    break
+                await asyncio.sleep(0.05)
+            assert report[0]["state"] == "acknowledged"
+            other = (await http.post("/call", headers=zcode, json={"action": "receive", "channel": channel,
+                                                                    "timeout": 0, "session": CHAT_B})).json()
+            assert other["error"] == "wrong_session"
+            got = (await http.post("/call", headers=zcode, json={"action": "receive", "channel": channel,
+                                                                  "timeout": 0, "session": CHAT_A})).json()
+            assert got["messages"][0]["body"] == "2+2?"
+    requests = [json.loads(line) for line in (tmp_path / "bridge.log").read_text().splitlines()]
+    assert [r["op"] for r in requests] == ["confirm", "status", "send"]
+    assert all(r["target"] == {"session": CHAT_A} for r in requests) and "2+2?" not in json.dumps(requests)
