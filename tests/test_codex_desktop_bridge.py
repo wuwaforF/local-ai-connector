@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 
 import pytest
@@ -19,6 +20,18 @@ THREAD_ID = "abcdefab-cdef-4abc-8def-abcdefabcdef"
 DISPATCH_ID = "12345678-1234-4234-8234-123456789abc"
 TARGET = {"thread_id": THREAD_ID, "workspace": "/workspace/project"}
 WAKE = bridge.WAKE_TEXT.format(dispatch=DISPATCH_ID, after=0)
+
+
+@pytest.fixture(autouse=True)
+def empty_codex_home(monkeypatch, tmp_path_factory):
+    monkeypatch.setattr(bridge, "DEFAULT_CODEX_HOME", tmp_path_factory.mktemp("codex-home"))
+
+
+def codex_store(home, *, archived, version=5):
+    with sqlite3.connect(home / f"state_{version}.sqlite") as db:
+        db.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, archived INTEGER NOT NULL)")
+        db.execute("INSERT OR REPLACE INTO threads VALUES (?, ?)", (THREAD_ID, int(archived)))
+    db.close()
 
 
 def snapshot(runtime="idle", *, cwd="/workspace/project", extra=None):
@@ -285,3 +298,38 @@ def test_restore_open_timeout_reports_failure_without_sending(monkeypatch):
     assert bridge.handle({'op': 'restore', 'target': TARGET}) == {
         'ok': False, 'error': 'unavailable', 'detail': 'TimeoutExpired',
     }
+
+
+@pytest.mark.parametrize('op', ['confirm', 'status', 'restore', 'send'])
+def test_archived_thread_is_refused_before_ipc_or_navigation(monkeypatch, tmp_path, op):
+    codex_store(tmp_path, archived=True)
+    monkeypatch.setattr(bridge.status_probe, 'with_snapshot', lambda *_a: pytest.fail('archived thread probed'))
+    monkeypatch.setattr(bridge.subprocess, 'run', lambda *_a, **_k: pytest.fail('archived thread opened'))
+    request = {'op': op, 'target': TARGET}
+    if op == 'send':
+        request.update(dispatch_id=DISPATCH_ID, text=WAKE)
+
+    result = bridge.handle(request, state_dir=tmp_path / 'state', codex_home=tmp_path)
+
+    assert result['ok'] is False and result['error'] == 'archived' and 'retryable' not in result
+    assert not (tmp_path / 'state' / f'{DISPATCH_ID}.json').exists()
+
+
+def test_unarchived_thread_goes_on_to_the_ipc_checks(monkeypatch, tmp_path):
+    codex_store(tmp_path, archived=False)
+    patch_snapshot(monkeypatch, snapshot(), FakeConnection())
+    assert bridge.handle({'op': 'status', 'target': TARGET}, codex_home=tmp_path) == {'ok': True, 'state': 'idle'}
+
+
+def test_archive_lookup_uses_newest_store_that_knows_the_thread(tmp_path):
+    assert bridge._archived(THREAD_ID, tmp_path) is False
+    (tmp_path / 'state_9.sqlite').write_bytes(b'not a database')
+    with sqlite3.connect(tmp_path / 'state_8.sqlite') as db:
+        db.execute('CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT)')
+    db.close()
+    assert bridge._archived(THREAD_ID, tmp_path) is False
+    codex_store(tmp_path, archived=True, version=5)
+    assert bridge._archived(THREAD_ID, tmp_path) is True
+    codex_store(tmp_path, archived=False, version=6)
+    assert bridge._archived(THREAD_ID, tmp_path) is False
+    assert bridge._archived(THREAD_ID, Path('relative-codex-home')) is False
