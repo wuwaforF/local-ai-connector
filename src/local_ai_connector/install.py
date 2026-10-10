@@ -230,7 +230,8 @@ def _remove_tree(path: Path, wait: float = 10.0):
 
 def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dry_run: bool = False,
           start_service: bool = True, wake: bool | None = None) -> dict:
-    """wake: True enables automatic wake-up for this host, False removes it, None keeps what is there."""
+    """wake: True turns automatic wake-up on, False turns it off and keeps it off on later runs, None uses the
+    default: on wherever the host supports it, unless it was turned off before."""
     ctx = ctx or Context.current()
     adapter = HOSTS.get(host)
     if adapter is None:
@@ -256,14 +257,15 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
                            f"The '{name}' entry in {config_file} changed since setup wrote it. Nothing was overwritten; "
                            "restore or remove it, then run setup again.")
     wake_record = (manifest or {}).get("wake", {}).get(host)
+    opted_out = host in (manifest or {}).get("wake_off", [])
     wake_config = _read_wake(data) if manifest else None
     wake_desired = None
-    if wake or (wake is None and wake_record):
+    if wake or (wake is None and (wake_record or not opted_out)):
         try:
             wake_desired = _wake_binding(host, data, ctx)
         except InstallError:
             if wake:
-                raise  # a plain re-run leaves an existing wake-up configuration alone
+                raise  # by default, setup goes on without wake-up where it is unavailable
     wake_state = _wake_state(wake_config, host, wake_desired, wake_record)
     if wake is not None and wake_state == "foreign":
         raise InstallError("wake_collision", f"{data / WAKE_FILE} already has a '{host}' binding that this installation "
@@ -274,6 +276,7 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
     wake_action = None
     disabled = wake is True and wake_state == "current" and wake_config.get("enabled") is not True
     if wake_desired is not None and (wake_state in ("absent", "outdated") or disabled):
+        # By default, a binding someone else wrote, or one that was edited, is left in place.
         wake_action = {"action": "write_wake_config", "host": host, "file": str(data / WAKE_FILE)}
     elif wake is False and wake_state in ("current", "outdated"):
         wake_action = {"action": "remove_wake_config", "host": host, "file": str(data / WAKE_FILE)}
@@ -292,6 +295,7 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
             adapter.write_entry(name, desired, env)
         recorded = {"entry": name, "file": str(config_file), "fingerprint": fingerprint(adapter.owned_view(desired))}
         wakes = dict(manifest.get("wake", {}))
+        wake_off = sorted(set(manifest.get("wake_off", [])) - {host} | ({host} if wake is False else set()))
         if wake is False:
             wakes.pop(host, None)
         if wake_action:
@@ -300,11 +304,14 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
                 wakes[host] = fingerprint(wake_desired)
             else:
                 wakes.pop(host, None)
+        if wake is None:
+            wake_off = sorted(manifest.get("wake_off", []))
         if (manifest["host_entries"].get(host) != recorded or manifest["runtime"] != ctx.runtime
-                or manifest.get("wake", {}) != wakes):
+                or manifest.get("wake", {}) != wakes or manifest.get("wake_off", []) != wake_off):
             manifest["host_entries"][host] = recorded
             manifest["runtime"] = ctx.runtime
             manifest["wake"] = wakes
+            manifest["wake_off"] = wake_off
             _write_manifest(data, manifest)
     report = {"host": host, "profile": profile, "entry": name, "config_file": str(config_file),
               "data_dir": str(data), "dry_run": dry_run, "changed": bool(actions), "actions": actions,
@@ -314,7 +321,9 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
                             "This host can start tasks; exact-chat binding is not supported for it yet.")}
     if manifest:
         report["installation_id"] = manifest["installation_id"]
-        report["wake"] = "enabled" if manifest.get("wake", {}).get(host) else "off"
+        report["wake"] = ("enabled" if manifest.get("wake", {}).get(host) else
+                          "off" if host in manifest.get("wake_off", []) else
+                          "unavailable" if wake_desired is None else "not managed by setup")
     if wake_action and not dry_run:
         # The service reads the wake-up configuration when it starts.
         endpoint = json.loads((data / f"{host}.json").read_text())
@@ -386,8 +395,12 @@ def uninstall(*, profile: str = "default", ctx: Context | None = None, hosts: li
 def _check_wake(check, name: str, data: Path, manifest: dict, ctx: Context):
     spec, record = getattr(HOSTS[name], "WAKE", None), manifest.get("wake", {}).get(name)
     if record is None:
-        hint = (f"; enable it with: local-ai-connector setup {name} --wake"
-                if spec and ctx.platform in spec["platforms"] else "; automatic wake-up is not available here")
+        if name in manifest.get("wake_off", []):
+            hint = f"; it was turned off with --no-wake. Turn it on with: local-ai-connector setup {name} --wake"
+        elif spec and ctx.platform in spec["platforms"]:
+            hint = f"; turn automatic wake-up on with: local-ai-connector setup {name} --wake"
+        else:
+            hint = "; automatic wake-up is not available here"
         check(f"{name}.wake", None, "attended mode: the bound chat collects tasks when asked" + hint, "not enabled")
         return
     try:

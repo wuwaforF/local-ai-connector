@@ -1,7 +1,7 @@
 """Prepare the Codex direct wake-up test: an isolated connector profile loaded only in one test folder.
 
 `setup codex --wake` runs under a throwaway home inside the folder, so it writes no global
-configuration. Its entry is added to the folder's project config (`.codex/config.toml`), which also
+configuration (`--wake` is the macOS default; it is passed so a missing bridge fails loudly). Its entry is added to the folder's project config (`.codex/config.toml`), which also
 turns the live `local_ai_connector` server off for chats in this folder. Codex applies project config
 only once the folder is trusted. Setup's wake-up binding targets the chat each task was pinned to at
 approval.

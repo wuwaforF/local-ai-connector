@@ -65,9 +65,9 @@ def main():
     install.add_argument("--no-start", action="store_true", help="do not start the service now")
     waking = install.add_mutually_exclusive_group()
     waking.add_argument("--wake", dest="wake", action="store_const", const=True, default=None,
-                        help="wake the bound chat automatically when a task is approved (Codex, macOS; opt-in experiment)")
+                        help="wake the bound chat when a task is approved (Codex on macOS: the default)")
     waking.add_argument("--no-wake", dest="wake", action="store_const", const=False,
-                        help="turn automatic wake-up off again")
+                        help="turn automatic wake-up off and keep it off on later runs")
     remove = sub.add_parser("uninstall", help="remove host entries this installation created")
     remove.add_argument("--profile", default="default")
     remove.add_argument("--host", action="append", choices=["codex", "claude", "antigravity"])

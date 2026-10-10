@@ -24,9 +24,9 @@ PERMISSIONS = (
     "choice; setup does not grant it. Task approval is a separate form shown for every new task.",
     "If your approval policy auto-rejects MCP forms, task approval cannot be shown; allow MCP elicitations.",
 )
-LIMITATIONS = ("Automatic wake-up of the bound chat is an opt-in macOS experiment (setup codex --wake). It needs "
-               "the chat open and idle in Codex Desktop and uses the desktop's undocumented local IPC. Without it, "
-               "the bound chat collects tasks when asked.",)
+LIMITATIONS = ("On macOS, setup turns on automatic wake-up of the bound chat (turn it off with setup codex "
+               "--no-wake). It needs the chat open and idle in Codex Desktop and uses the desktop's undocumented local "
+               "IPC. Elsewhere, or with wake-up off, the bound chat collects tasks when asked.",)
 # Wakes the chat pinned at approval through Codex Desktop's local thread IPC (macOS only).
 WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "codex_desktop", "bridge.py"),
         "state_dir": "codex-desktop-dispatches"}
