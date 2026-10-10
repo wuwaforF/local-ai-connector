@@ -3,16 +3,16 @@
 These scripts test that a task wakes the exact Codex Desktop chat it was pinned to at approval,
 without a relay chat. Everything runs in one disposable folder:
 
-- `setup codex` runs under a throwaway home inside the folder, so global configuration is not written.
+- `setup codex --wake` runs under a throwaway home inside the folder, so global configuration is not written.
 - The folder's project config (`.codex/config.toml`) loads the test server and turns the live
   `local_ai_connector` server off, for chats in this folder only. Codex applies it once the folder
   is trusted.
-- The profile's `wakeup.json` uses `"target": "pinned"`, and the Codex bridge keeps its dispatch
-  records inside the profile.
+- Setup's wake-up binding (`"target": "pinned"`) wakes the chat each task was pinned to, and the Codex
+  bridge keeps its dispatch records inside the profile.
 
 | Script | Role |
 | --- | --- |
-| `prepare.py` | Creates the profile and the folder's project config. `--restore` lets wake-up open a pinned chat that is not loaded. |
+| `prepare.py` | Creates the profile with wake-up and the folder's project config. |
 | `initiator.py` | Terminal stand-in for an initiating desktop. Only a typed `yes` approves a task. `status` shows the binding, recent wake dispatches and incidents. |
 
 ```sh

@@ -1,4 +1,5 @@
 """Installer: isolation, idempotent setup, collision detection and owned-only uninstall."""
+from dataclasses import replace
 import json
 from pathlib import Path
 import socket
@@ -8,9 +9,10 @@ import pytest
 import tomlkit
 
 from hostfakes import context
-from local_ai_connector import os_adapter, service
+from local_ai_connector import install as installer, os_adapter, service
 from local_ai_connector.hosts import HOSTS, HostConfigError
 from local_ai_connector.install import InstallError, doctor, profile_dir, read_manifest, setup, uninstall
+from local_ai_connector.wakeup import load_config
 
 CODEX_CONFIG = """# my Codex settings
 model = "gpt-6"
@@ -35,7 +37,8 @@ def test_setup_creates_a_private_installation_and_preserves_unrelated_configurat
     write(codex_file(ctx), CODEX_CONFIG)
     report = setup("codex", ctx=ctx, start_service=False)
     data = profile_dir("default", ctx)
-    assert report["changed"] and [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry"]
+    wake = ["write_wake_config"] if ctx.platform == "darwin" else []  # on by default where Codex wake-up exists
+    assert report["changed"] and [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry", *wake]
     text = codex_file(ctx).read_text()
     assert text.startswith(CODEX_CONFIG.rstrip("\n"))  # comments and other servers untouched
     entry = tomlkit.parse(text)["mcp_servers"]["local_ai_connector"]
@@ -69,7 +72,8 @@ def test_dry_run_writes_nothing(tmp_path):
     ctx = context(tmp_path)
     write(codex_file(ctx), CODEX_CONFIG)
     report = setup("codex", ctx=ctx, dry_run=True)
-    assert [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry"]
+    wake = ["write_wake_config"] if ctx.platform == "darwin" else []
+    assert [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry", *wake]
     assert codex_file(ctx).read_text() == CODEX_CONFIG
     assert not profile_dir("default", ctx).exists()
 
@@ -211,3 +215,125 @@ def test_doctor_reports_each_check_and_what_it_could_not_verify(tmp_path):
     assert checks["codex.entry"]["ok"] is True and checks["private_files"]["ok"] is True
     assert checks["codex.host_loaded"]["evidence"] == "not checked"
     assert checks["service"]["ok"] is None  # starts on demand with the first MCP connection
+
+
+# --- automatic wake-up (Codex on macOS: on by default) --------------------------------------
+def mac(tmp_path):
+    return replace(context(tmp_path), platform="darwin")
+
+
+def wake_config(ctx):
+    return json.loads((profile_dir("default", ctx) / "wakeup.json").read_text())
+
+
+def rewrite_wake(ctx, config):
+    os_adapter.replace_private_file(profile_dir("default", ctx) / "wakeup.json", json.dumps(config).encode())
+
+
+def test_wake_is_on_by_default_on_macos_and_the_service_loads_it(tmp_path):
+    ctx = mac(tmp_path)
+    report = setup("codex", ctx=ctx, start_service=False)
+    data = profile_dir("default", ctx)
+    assert "write_wake_config" in [a["action"] for a in report["actions"]] and report["wake"] == "enabled"
+    assert os_adapter.is_private(data / "wakeup.json")
+    bridge = installer.SOURCE_ROOT / "integrations" / "codex_desktop" / "bridge.py"
+    assert wake_config(ctx) == {"enabled": True, "bindings": {"codex": {
+        "adapter": "command", "target": "pinned", "timeout": 30, "restore": False,
+        "command": [ctx.runtime, str(bridge), "--state-dir", str(data / "codex-desktop-dispatches")]}}}
+    bindings, options = load_config(data, set(HOSTS))
+    assert bindings["codex"].pinned and options == {}
+
+    assert setup("codex", ctx=ctx, start_service=False)["changed"] is False
+    assert setup("codex", ctx=ctx, start_service=False, wake=True)["changed"] is False
+    moved = replace(ctx, runtime=str(tmp_path / "new-python"))
+    assert "write_wake_config" in [a["action"] for a in setup("codex", ctx=moved, start_service=False)["actions"]]
+    assert wake_config(ctx)["bindings"]["codex"]["command"][0] == moved.runtime
+
+
+def test_default_setup_goes_on_without_wake_up_where_it_is_unavailable(tmp_path):
+    linux = replace(context(tmp_path), platform="linux")
+    report = setup("codex", ctx=linux, start_service=False)
+    assert report["wake"] == "unavailable" and "write_wake_config" not in [a["action"] for a in report["actions"]]
+    assert not (profile_dir("default", linux) / "wakeup.json").exists()
+    assert setup("antigravity", ctx=mac(tmp_path), start_service=False)["wake"] == "unavailable"
+
+
+def test_explicit_wake_refuses_other_hosts_platforms_and_bindings_it_does_not_own(tmp_path):
+    ctx = mac(tmp_path)
+    for host, platform, code in (("antigravity", "darwin", "wake_unsupported"),
+                                 ("codex", "linux", "wake_unsupported_platform")):
+        with pytest.raises(InstallError) as error:
+            setup(host, ctx=replace(ctx, platform=platform), start_service=False, wake=True)
+        assert error.value.code == code
+        assert not profile_dir("default", replace(ctx, platform=platform)).exists()  # checked before any write
+
+    setup("antigravity", ctx=ctx, start_service=False)  # an installation with no Codex wake-up of its own
+    foreign = {"enabled": True, "bindings": {"codex": {"adapter": "command", "target": "pinned", "command": ["mine"]}}}
+    os_adapter.create_private_file(profile_dir("default", ctx) / "wakeup.json", json.dumps(foreign).encode())
+    report = setup("codex", ctx=ctx, start_service=False)  # the default leaves it in place
+    assert report["wake"] == "not managed by setup" and wake_config(ctx) == foreign
+    with pytest.raises(InstallError) as error:
+        setup("codex", ctx=ctx, start_service=False, wake=True)
+    assert error.value.code == "wake_collision" and wake_config(ctx) == foreign
+
+    (profile_dir("default", ctx) / "wakeup.json").unlink()
+    setup("codex", ctx=ctx, start_service=False)
+    edited = wake_config(ctx)
+    edited["bindings"]["codex"]["restore"] = True
+    rewrite_wake(ctx, edited)
+    with pytest.raises(InstallError) as error:
+        setup("codex", ctx=ctx, start_service=False, wake=True)
+    assert error.value.code == "wake_modified"
+    assert setup("codex", ctx=ctx, start_service=False)["changed"] is False and wake_config(ctx) == edited
+
+
+def test_no_wake_stays_off_and_uninstall_removes_only_the_owned_binding(tmp_path):
+    ctx = mac(tmp_path)
+    setup("codex", ctx=ctx, start_service=False)
+    report = setup("codex", ctx=ctx, start_service=False, wake=False)
+    assert [a["action"] for a in report["actions"]] == ["remove_wake_config"] and report["wake"] == "off"
+    assert not (profile_dir("default", ctx) / "wakeup.json").exists()  # no bindings left
+    again = setup("codex", ctx=ctx, start_service=False)
+    assert again["changed"] is False and again["wake"] == "off"  # the opt-out survives a plain re-run
+    assert setup("codex", ctx=ctx, start_service=False, wake=True)["wake"] == "enabled"
+    assert read_manifest(profile_dir("default", ctx))["wake_off"] == []
+
+    theirs = {"adapter": "command", "target": {"session_id": "x"}, "command": ["mine"]}
+    config = wake_config(ctx)
+    config["bindings"]["claude"] = theirs
+    rewrite_wake(ctx, config)
+    result = uninstall(ctx=ctx)
+    assert result["host_entries"][0]["wake"] == "removed"
+    assert wake_config(ctx)["bindings"] == {"claude": theirs}
+    assert read_manifest(profile_dir("default", ctx))["wake"] == {}
+
+
+def test_doctor_reports_wake_up(tmp_path):
+    ctx = mac(tmp_path)
+    setup("codex", ctx=ctx, start_service=False)
+    assert {c["check"]: c for c in doctor(ctx=ctx)["checks"]}["codex.wake"]["ok"] is True
+    config = wake_config(ctx)
+    config["enabled"] = False
+    rewrite_wake(ctx, config)
+    wake = {c["check"]: c for c in doctor(ctx=ctx)["checks"]}["codex.wake"]
+    assert wake["ok"] is False and "turned off" in wake["detail"]
+    assert setup("codex", ctx=ctx, start_service=False)["changed"] is False  # a plain re-run respects that
+    assert [a["action"] for a in setup("codex", ctx=ctx, start_service=False, wake=True)["actions"]] == ["write_wake_config"]
+    assert wake_config(ctx)["enabled"] is True
+    setup("codex", ctx=ctx, start_service=False, wake=False)
+    wake = {c["check"]: c for c in doctor(ctx=ctx)["checks"]}["codex.wake"]
+    assert wake["ok"] is None and "--no-wake" in wake["detail"]
+
+
+def test_changing_wake_up_restarts_a_running_service(tmp_path, monkeypatch):
+    ctx = mac(tmp_path)
+    setup("codex", ctx=ctx, start_service=False, wake=False)
+    calls = []
+    monkeypatch.setattr(service, "probe", lambda url, token: "ours")
+    monkeypatch.setattr(service, "stop", lambda data, **kw: calls.append("stop") or "stopped")
+    monkeypatch.setattr(service, "ensure", lambda *a, **kw: calls.append("ensure") or "started")
+    report = setup("codex", ctx=ctx, start_service=False, wake=True)
+    assert calls == ["stop", "ensure"] and report["service_restarted"]
+    calls.clear()
+    setup("codex", ctx=ctx, start_service=False)
+    assert calls == []
