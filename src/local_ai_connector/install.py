@@ -26,6 +26,8 @@ from .hosts import HOSTS, HostEnv, fingerprint
 
 SCHEMA = 1
 MANIFEST = "install.json"
+WAKE_FILE = "wakeup.json"
+SOURCE_ROOT = Path(__file__).resolve().parents[2]  # the checkout that holds integrations/
 _PROFILE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ENDPOINTS = tuple(HOSTS)  # one endpoint per host, all created with the installation
 
@@ -148,6 +150,62 @@ def _entry_state(adapter, name: str, desired: dict, record: dict | None, env: Ho
     return "foreign"
 
 
+def _wake_binding(host: str, data: Path, ctx: Context) -> dict:
+    """The wake-up binding setup owns for host: wake the chat each task was pinned to at approval."""
+    spec = getattr(HOSTS[host], "WAKE", None)
+    if spec is None:
+        raise InstallError("wake_unsupported", f"{HOSTS[host].DISPLAY_NAME} has no automatic wake-up in this version.")
+    if ctx.platform not in spec["platforms"]:
+        raise InstallError("wake_unsupported_platform",
+                           f"{HOSTS[host].DISPLAY_NAME} wake-up is available on macOS only in this version.")
+    bridge = SOURCE_ROOT.joinpath(*spec["bridge"])
+    if not bridge.is_file():
+        raise InstallError("wake_unavailable", f"The wake-up bridge is missing ({bridge}); run setup from a source "
+                           "checkout of the connector.")
+    return {"adapter": "command", "target": "pinned", "timeout": 30, "restore": False,
+            "command": [ctx.runtime, str(bridge), "--state-dir", str(data / spec["state_dir"])]}
+
+
+def _read_wake(data: Path) -> dict | None:
+    path = data / WAKE_FILE
+    if not path.exists():
+        return None
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        config = None
+    if not isinstance(config, dict) or not isinstance(config.get("bindings", {}), dict):
+        raise InstallError("wake_config_unreadable", f"{path} is not a valid wake-up configuration; nothing was changed.")
+    return config
+
+
+def _wake_state(config: dict | None, host: str, desired: dict | None, record: str | None) -> str:
+    current = (config or {}).get("bindings", {}).get(host)
+    if current is None:
+        return "absent"
+    if desired is not None and current == desired:
+        return "current"
+    if record is not None:
+        return "outdated" if fingerprint(current) == record else "modified"
+    return "foreign"
+
+
+def _write_wake(data: Path, config: dict | None, host: str, binding: dict | None):
+    """Set or remove this host's binding, keeping any others; the file goes when none remain."""
+    config = dict(config or {})
+    bindings = dict(config.get("bindings", {}))
+    if binding is None:
+        bindings.pop(host, None)
+    else:
+        bindings[host] = binding
+        config["enabled"] = True
+    if not bindings:
+        (data / WAKE_FILE).unlink(missing_ok=True)
+        return
+    config["bindings"] = bindings
+    os_adapter.replace_private_file(data / WAKE_FILE, _dumps(config))
+
+
 def _backup(data: Path, path: Path, host: str):
     if not path.exists() or not getattr(HOSTS[host], "EDITS_CONFIG_DIRECTLY", True):
         return
@@ -171,7 +229,8 @@ def _remove_tree(path: Path, wait: float = 10.0):
 
 
 def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dry_run: bool = False,
-          start_service: bool = True) -> dict:
+          start_service: bool = True, wake: bool | None = None) -> dict:
+    """wake: True enables automatic wake-up for this host, False removes it, None keeps what is there."""
     ctx = ctx or Context.current()
     adapter = HOSTS.get(host)
     if adapter is None:
@@ -196,6 +255,28 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
         raise InstallError("entry_modified",
                            f"The '{name}' entry in {config_file} changed since setup wrote it. Nothing was overwritten; "
                            "restore or remove it, then run setup again.")
+    wake_record = (manifest or {}).get("wake", {}).get(host)
+    wake_config = _read_wake(data) if manifest else None
+    wake_desired = None
+    if wake or (wake is None and wake_record):
+        try:
+            wake_desired = _wake_binding(host, data, ctx)
+        except InstallError:
+            if wake:
+                raise  # a plain re-run leaves an existing wake-up configuration alone
+    wake_state = _wake_state(wake_config, host, wake_desired, wake_record)
+    if wake is not None and wake_state == "foreign":
+        raise InstallError("wake_collision", f"{data / WAKE_FILE} already has a '{host}' binding that this installation "
+                           "did not create. Nothing was changed.")
+    if wake is not None and wake_state == "modified":
+        raise InstallError("wake_modified", f"The '{host}' binding in {data / WAKE_FILE} changed since setup wrote it. "
+                           "Nothing was overwritten; restore or remove it, then run setup again.")
+    wake_action = None
+    disabled = wake is True and wake_state == "current" and wake_config.get("enabled") is not True
+    if wake_desired is not None and (wake_state in ("absent", "outdated") or disabled):
+        wake_action = {"action": "write_wake_config", "host": host, "file": str(data / WAKE_FILE)}
+    elif wake is False and wake_state in ("current", "outdated"):
+        wake_action = {"action": "remove_wake_config", "host": host, "file": str(data / WAKE_FILE)}
     actions = []
     if manifest is None:
         actions.append({"action": "create_installation", "data_dir": str(data)})
@@ -203,14 +284,27 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
             manifest = _create(data, ctx, profile)
     if state in ("absent", "outdated"):
         actions.append({"action": "write_host_entry", "host": host, "entry": name, "file": str(config_file)})
+    if wake_action:
+        actions.append(wake_action)
     if not dry_run:
         if state in ("absent", "outdated"):
             _backup(data, config_file, host)
             adapter.write_entry(name, desired, env)
         recorded = {"entry": name, "file": str(config_file), "fingerprint": fingerprint(adapter.owned_view(desired))}
-        if manifest["host_entries"].get(host) != recorded or manifest["runtime"] != ctx.runtime:
+        wakes = dict(manifest.get("wake", {}))
+        if wake is False:
+            wakes.pop(host, None)
+        if wake_action:
+            _write_wake(data, _read_wake(data), host, wake_desired if wake_action["action"] == "write_wake_config" else None)
+            if wake_desired is not None and wake_action["action"] == "write_wake_config":
+                wakes[host] = fingerprint(wake_desired)
+            else:
+                wakes.pop(host, None)
+        if (manifest["host_entries"].get(host) != recorded or manifest["runtime"] != ctx.runtime
+                or manifest.get("wake", {}) != wakes):
             manifest["host_entries"][host] = recorded
             manifest["runtime"] = ctx.runtime
+            manifest["wake"] = wakes
             _write_manifest(data, manifest)
     report = {"host": host, "profile": profile, "entry": name, "config_file": str(config_file),
               "data_dir": str(data), "dry_run": dry_run, "changed": bool(actions), "actions": actions,
@@ -220,7 +314,15 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
                             "This host can start tasks; exact-chat binding is not supported for it yet.")}
     if manifest:
         report["installation_id"] = manifest["installation_id"]
-    if start_service and not dry_run:
+        report["wake"] = "enabled" if manifest.get("wake", {}).get(host) else "off"
+    if wake_action and not dry_run:
+        # The service reads the wake-up configuration when it starts.
+        endpoint = json.loads((data / f"{host}.json").read_text())
+        if service.probe(endpoint["url"], endpoint["token"]) == "ours":
+            service.stop(data)
+            report["service"] = service.ensure(data, endpoint["url"], endpoint["token"], runtime=ctx.runtime)
+            report["service_restarted"] = "to load the wake-up configuration"
+    if start_service and not dry_run and "service" not in report:
         endpoint = json.loads((data / f"{host}.json").read_text())
         report["service"] = service.ensure(data, endpoint["url"], endpoint["token"], runtime=ctx.runtime)
     return report
@@ -252,7 +354,18 @@ def uninstall(*, profile: str = "default", ctx: Context | None = None, hosts: li
             state = "modified_left_in_place"
         if state != "modified_left_in_place" and not dry_run:
             del manifest["host_entries"][host]
-        results.append({"host": host, "entry": record["entry"], "file": record["file"], "state": state})
+        result = {"host": host, "entry": record["entry"], "file": record["file"], "state": state}
+        wake_record = manifest.get("wake", {}).get(host)
+        if wake_record and state != "modified_left_in_place":
+            config = _read_wake(data)
+            wake_state = _wake_state(config, host, None, wake_record)
+            result["wake"] = {"outdated": "removed", "absent": "already_absent"}.get(wake_state, "modified_left_in_place")
+            if not dry_run:
+                if wake_state == "outdated":
+                    _write_wake(data, config, host, None)
+                if wake_state != "modified":
+                    manifest["wake"].pop(host)
+        results.append(result)
     remaining = sorted(manifest["host_entries"])
     if purge and remaining:
         raise InstallError("entries_remaining", "Host entries remain (" + ", ".join(remaining) + "); the data "
@@ -268,6 +381,27 @@ def uninstall(*, profile: str = "default", ctx: Context | None = None, hosts: li
         else:
             _write_manifest(data, manifest)
     return report
+
+
+def _check_wake(check, name: str, data: Path, manifest: dict, ctx: Context):
+    spec, record = getattr(HOSTS[name], "WAKE", None), manifest.get("wake", {}).get(name)
+    if record is None:
+        hint = (f"; enable it with: local-ai-connector setup {name} --wake"
+                if spec and ctx.platform in spec["platforms"] else "; automatic wake-up is not available here")
+        check(f"{name}.wake", None, "attended mode: the bound chat collects tasks when asked" + hint, "not enabled")
+        return
+    try:
+        config = _read_wake(data)
+        state = _wake_state(config, name, _wake_binding(name, data, Context(ctx.home, ctx.environ,
+                            manifest["runtime"], ctx.platform)), record)
+    except InstallError as exc:
+        check(f"{name}.wake", False, f"{exc.code}: {exc}")
+        return
+    if state == "current" and config.get("enabled") is not True:
+        state = "turned off"
+    check(f"{name}.wake", state == "current",
+          "wakes the chat pinned when each task is approved, while it is open and idle in the desktop app"
+          if state == "current" else f"wake-up configuration is {state}; run: local-ai-connector setup {name} --wake")
 
 
 def doctor(*, profile: str = "default", ctx: Context | None = None, host: str | None = None) -> dict:
@@ -308,6 +442,7 @@ def doctor(*, profile: str = "default", ctx: Context | None = None, host: str | 
               f"'{record['entry']}' in {record['file']}")
         check(f"{name}.host_loaded", None, f"restart or reconnect MCP servers in {adapter.DISPLAY_NAME} after setup",
               "not checked")
+        _check_wake(check, name, data, manifest, ctx)
         token = json.loads((data / f"{name}.json").read_text())["token"]
         state = service.probe(server["url"], token)
         if state != "ours":
@@ -322,8 +457,6 @@ def doctor(*, profile: str = "default", ctx: Context | None = None, host: str | 
             check(f"{name}.binding", True if binding.get("bound") else None,
                   f"bound to '{binding['label']}' ({binding['chat']}, revision {binding['revision']})"
                   if binding.get("bound") else "no chat bound yet; ask in the worker chat: \"Use this chat for connector tasks.\"")
-        check(f"{name}.wake", None, "attended mode: the bound chat collects tasks when asked; automatic wake-up "
-              "is not available in this version", "not supported")
     if state is None and selected:
         state = service.probe(server["url"], json.loads((data / f"{selected[0]}.json").read_text())["token"])
     if state is not None:
