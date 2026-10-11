@@ -227,6 +227,13 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
                chat_binding=decide_binding if delegating and read_chat is not None else None).run(transport="stdio")
 
 
+PAIRING_TOOL_DESCRIPTION = (
+    " Two-way: when the user wants the other app to be able to send tasks back to THIS chat, set bind_this_chat_as "
+    "to a short label for this chat. The same approval then also binds this chat to receive tasks sent to its own app, "
+    "and the approval shows that. Leave it unset otherwise. It grants no task permission: each task sent back still "
+    "needs approval in the app that starts it.")
+
+
 def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_locale="zh-CN", approval_transport="elicitation",
                binding_catalog=None, binding_inspect=None, binding_guide=None, codex_quick_binding=False, chat_binding=None):
     if (binding_catalog is None) != (binding_inspect is None):
@@ -501,13 +508,15 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                   "Every invocation requires new native permission. No model-supplied consent is accepted."
                   if host_permission else (descriptions.get("connector_delegate") or
                   "委派完整任务并请求用户批准，等待真实回复。重试保持 request_key、target、message 和 conversation_mode。")
-                  + (CONVERSATION_TOOL_DESCRIPTION if english else ZH_CONVERSATION_TOOL_DESCRIPTION)),
+                  + (CONVERSATION_TOOL_DESCRIPTION if english else ZH_CONVERSATION_TOOL_DESCRIPTION)
+                  + (PAIRING_TOOL_DESCRIPTION if chat_binding is not None else "")),
                   meta={"anthropic/requiresUserInteraction": True} if host_permission else None,
                   annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True))
         async def connector_delegate(ctx: Context, target: str, message: str, request_key: str,
                                      conversation_mode: Literal["existing", "new"], timeout_seconds: int = 180,
                                      reply_to: str | None = None, reply: str | None = None,
-                                     target_chat: str | None = None, binding_revision: int | None = None) -> dict | InputRequiredResult:
+                                     target_chat: str | None = None, binding_revision: int | None = None,
+                                     bind_this_chat_as: str | None = None) -> dict | InputRequiredResult:
             """委派任务给另一个模型或工作者，如使用外部子代理。target 来自 connector_status；message 是完整任务原文。工具在当前聊天请求用户确认，批准后自动等待真实结果并结束交流。执行等待为 1–600 秒，不含用户确认时间。重试复用 request_key、target 和 message；running 时继续本工具等待。input_required 时同时提供 reply_to（questions 中的问题 id）和 reply（补充回复），继续原任务；补充回复重试也须保持原文。completed 的 answer.body 是工作者原文。"""
             from .delegation import delegate
             try:
@@ -515,10 +524,12 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                     from .delegation import delegate_with_host_permission
                     return await delegate_with_host_permission(ctx, invoke, decision, target, message, request_key,
                                                               reply_to=reply_to, reply=reply, conversation_mode=conversation_mode,
-                                                              target_chat=target_chat, binding_revision=binding_revision)
+                                                              target_chat=target_chat, binding_revision=binding_revision,
+                                                              bind_this_chat_as=bind_this_chat_as, decide_binding=chat_binding)
                 return await delegate(ctx, invoke, decision, target, message, request_key, timeout_seconds,
                                       reply_to=reply_to, reply=reply, mcp_locale=mcp_locale, conversation_mode=conversation_mode,
-                                      target_chat=target_chat, binding_revision=binding_revision)
+                                      target_chat=target_chat, binding_revision=binding_revision,
+                                      bind_this_chat_as=bind_this_chat_as, decide_binding=chat_binding)
             except ConnectorError as exc:
                 raise ToolError(f"{exc.code}: {exc}") from exc
             except httpx.RequestError as exc:

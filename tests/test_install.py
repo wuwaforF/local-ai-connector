@@ -337,3 +337,16 @@ def test_changing_wake_up_restarts_a_running_service(tmp_path, monkeypatch):
     calls.clear()
     setup("codex", ctx=ctx, start_service=False)
     assert calls == []
+
+
+def test_claude_wake_is_on_by_default_on_macos_next_to_codex(tmp_path):
+    ctx = mac(tmp_path)
+    assert setup("claude", ctx=ctx, start_service=False)["wake"] == "enabled"
+    bridge = installer.SOURCE_ROOT / "integrations" / "claude_code" / "bridge.py"
+    assert wake_config(ctx)["bindings"]["claude"] == {"adapter": "command", "target": "pinned", "timeout": 30,
+                                                      "restore": False, "command": [ctx.runtime, str(bridge)]}
+    setup("codex", ctx=ctx, start_service=False)
+    bindings, _ = load_config(profile_dir("default", ctx), set(HOSTS))
+    assert {peer for peer, binding in bindings.items() if binding.pinned} == {"claude", "codex"}
+    setup("claude", ctx=ctx, start_service=False, wake=False)
+    assert set(wake_config(ctx)["bindings"]) == {"codex"}  # turning one off keeps the other

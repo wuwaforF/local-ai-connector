@@ -27,12 +27,17 @@ PERMISSIONS = (
     "Allowing connector_receive, connector_send and connector_status without prompts is your choice; setup "
     "does not grant it.",
 )
-LIMITATIONS = ("Automatic wake-up of a Claude chat is not available yet; the bound chat collects tasks in attended mode.",
+LIMITATIONS = ("On macOS, setup turns on automatic wake-up of the bound Claude Code chat through its session inbox (turn "
+               "it off with setup claude --no-wake). The chat must be running in Claude; Claude's own inbox settings can "
+               "hold or refuse the wake message. Elsewhere, the bound chat collects tasks when asked.",
                "A project's own .mcp.json server with the same name takes precedence inside that project; "
                "setup cannot see those files. Use --profile if you already have one.",
                "Chat identity relies on CLAUDE_CODE_SESSION_ID reaching the connector's MCP process; doctor and "
                "binding report it when the host does not provide it.")
 CLI_OVERRIDE = "LOCAL_AI_CONNECTOR_CLAUDE_CLI"
+
+# Wakes the chat pinned at approval through its Claude Code session inbox, found in Claude Code's registry.
+WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "claude_code", "bridge.py")}
 
 
 def config_path(env) -> Path:
