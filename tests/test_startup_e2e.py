@@ -133,3 +133,57 @@ async def test_install_bind_approve_route_answer_decline_restart_and_reinstall(i
     removed = run_cli(environ, "uninstall", "--purge")
     assert {r["state"] for r in removed["host_entries"]} == {"removed"} and removed["data_dir"] == "removed"
     assert "local_ai_connector" not in tomlkit.parse(HOSTS["codex"].config_path(env).read_text()).get("mcp_servers", {})
+
+
+async def test_one_approval_delegates_and_binds_the_initiating_chat_for_tasks_back(installed):
+    environ, ctx = installed
+    env = HostEnv(ctx.home, environ)
+    run_cli(environ, "setup", "codex", "--no-wake")
+    run_cli(environ, "setup", "claude", "--no-start", "--no-wake")
+    codex_entry = tomlkit.parse(HOSTS["codex"].config_path(env).read_text())["mcp_servers"]["local_ai_connector"]
+    claude_entry = json.loads(HOSTS["claude"].config_path(env).read_text())["mcpServers"]["local_ai_connector"]
+    codex = StdioServerParameters(command=codex_entry["command"], args=list(codex_entry["args"]), env=environ)
+    claude = StdioServerParameters(command=claude_entry["command"], args=claude_entry["args"],
+                                   env={**environ, "CLAUDE_CODE_SESSION_ID": "session-1"})
+    prompts = []
+
+    async def codex_user(ctx_, params):
+        prompts.append(params.message)
+        declined = "Decline me" in params.message
+        return ElicitResult(action="decline") if declined else ElicitResult(action="accept", content={})
+
+    async with Client(codex, elicitation_callback=codex_user) as codex_app, Client(claude) as claude_chat:
+        body(await codex_app.call_tool("connector_bind_this_chat", {"label": "Reviewer", "request_key": "b1"}, meta=CHAT_A))
+
+        # Claude's single permitted call starts the task and binds this Claude chat for tasks sent to Claude.
+        task = {"target": "codex", "message": "What is 17+25?", "request_key": "t1", "conversation_mode": "existing",
+                "target_chat": "Reviewer", "binding_revision": 1}
+        started = body(await claude_chat.call_tool("connector_delegate", {**task, "bind_this_chat_as": "Coordinator"}))
+        assert started["state"] == "active"
+        assert started["this_chat_bound"]["state"] == "approved" and started["this_chat_bound"]["label"] == "Coordinator"
+        workers = {w["id"]: w for w in body(await codex_app.call_tool("connector_status", meta=CHAT_A))["workers"]}
+        assert workers["claude"]["binding"] == {"bound": True, "revision": 1, "label": "Coordinator",
+                                                "chat": "claude:session-"}
+
+        # Codex sends a task back to that Claude chat; it is approved in Codex.
+        back = body(await codex_app.call_tool("connector_delegate", {
+            "target": "claude", "message": "Summarise this.", "request_key": "t2", "conversation_mode": "existing",
+            "target_chat": "Coordinator", "binding_revision": 1, "timeout_seconds": 1}, meta=CHAT_A))
+        assert back["state"] in ("running", "active")
+        inbox = body(await claude_chat.call_tool("connector_receive", {"timeout": 10}))
+        assert [m["body"] for m in inbox["messages"]] == ["Summarise this."]
+
+        # The approval form says what it binds; declining the task binds nothing.
+        declined = body(await codex_app.call_tool("connector_delegate", {
+            "target": "claude", "message": "Decline me", "request_key": "t3", "conversation_mode": "existing",
+            "target_chat": "Coordinator", "binding_revision": 1, "bind_this_chat_as": "Reviewer B"}, meta=CHAT_B))
+        assert declined["state"] == "denied" and declined["this_chat_bound"]["state"] == "declined"
+        assert "Also bind this chat" in prompts[-1] and "Reviewer B" in prompts[-1] and "replacing Reviewer" in prompts[-1]
+        workers = {w["id"]: w for w in body(await codex_app.call_tool("connector_status", meta=CHAT_A))["workers"]}
+        assert workers["codex"]["binding"]["label"] == "Reviewer"
+
+        # Replaying an approved task cannot add a binding its approval never showed.
+        replay = body(await claude_chat.call_tool("connector_delegate", {**task, "bind_this_chat_as": "Another"}))
+        assert replay["channel"] == started["channel"] and replay["this_chat_bound"]["state"] == "not_applied"
+        workers = {w["id"]: w for w in body(await codex_app.call_tool("connector_status", meta=CHAT_A))["workers"]}
+        assert workers["claude"]["binding"]["label"] == "Coordinator"

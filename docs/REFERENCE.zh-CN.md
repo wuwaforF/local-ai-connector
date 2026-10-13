@@ -129,6 +129,10 @@ approval_mode = "approve"
 - 先用 `connector_status` 查找 `workers`，再以目标 `id` 调用 `connector_delegate(target, message, request_key, conversation_mode)`。目标及任务原文出现在确认表单中；接受并确认后投递，拒绝或取消则返回实际决定，任务不投递。
 - 执行等待默认 180 秒，可设 `timeout_seconds=1..600`，从确认后计时。返回 `running`、`approval_timeout` 或工具等待中断时，复用原 `request_key`、`target`、`message`、`conversation_mode` 恢复同一任务。确认等待上限为 300 秒；任务授权总期限为 1 小时。
 - 返回 `input_required` 时，将 `questions` 中对应问题的 `id` 作为 `reply_to`、补充内容作为 `reply`，连同原任务参数再次调用。补充回复重试也保持这两个值不变。原任务尚未完成时，未读取的补充会通过已配置适配器唤醒工作者继续执行；等待用户补充的时间不计入工作者执行超时，任务授权期限仍然有效。
+- 一次批准建立双向：所在应用能提供聊天身份时，`connector_delegate` 可加 `bind_this_chat_as: "<标签>"`，同一次批准也把本聊天绑定为接收发给本应用的任务。
+  - 批准时会显示这项绑定：确认表单里有说明，Claude 的权限提示里能看到这个参数。
+  - 拒绝任务则不绑定；重放已批准的任务不会追加绑定，返回 `this_chat_bound.state: "not_applied"`。
+  - 结果中的 `this_chat_bound` 报告绑定情况。发回的任务仍须在发起它的应用中批准。
 - 原任务的下一轮使用 `connector_continue(channel, message, request_key)`；工作者追问时，在相同参数上附加 `reply_to`、`reply`。重试须保持 channel、正文和编号完全一致。空闲关闭的通道只在原授权期限内恢复，授权不会续期；过期、撤销或拒绝的通道不能重开。其他新任务仍走 `connector_delegate` 并重新确认。
 - `completed` 的 `answer.body` 是工作者实际回复；到期、拒绝及错误按返回状态处理。两端的 MCP 收发和连接器通道记录可用于核对结果。
 
@@ -227,8 +231,12 @@ uv run local-ai-connector --data .connector peer-add another-worker \
 - 重新绑定不会改变已批准任务的去向：待重试的唤醒仍发往该任务固定的聊天。
 - 没有固定聊天的任务不会被唤醒（`wake_target_unpinned`）。
 - 同一端点一次只进行一个唤醒，即使任务固定在不同聊天。
-- 目前只有 Codex Desktop 桥接程序支持固定目标（`{"session": "codex:<线程编号>"}`）。它只按线程编号核对身份，并拒绝已归档的线程（`wake_host_archived`）。
-- 在 macOS 上，`setup codex` 默认会写入这项配置，并重启正在运行的服务使之生效；`--no-wake` 可将其移除，之后再次运行 setup 也保持关闭，`--wake` 可重新开启。安装程序只管理自己写入的这一项：不会覆盖不是它写入或已被修改的配置，`uninstall` 和 `--no-wake` 也只移除它自己的那一项。
+- Codex Desktop 桥接程序接受 `{"session": "codex:<线程编号>"}`，只按线程编号核对身份，并拒绝已归档的线程（`wake_host_archived`）。
+- Claude Code 桥接程序接受 `{"session": "claude:<会话编号>"}`。
+  - 它在 Claude Code 的运行会话登记（`~/.claude/sessions`）中找到该会话唯一的运行进程，并读取其空闲或忙碌状态。
+  - 唤醒消息写入该会话的收件箱。收件箱不回执，因此在聊天取走任务前，发送记为未确认。
+  - Claude 自身的收件设置可以暂缓或拒绝这条消息。
+- 在 macOS 上，`setup codex` 和 `setup claude` 默认会写入这些配置，并重启正在运行的服务使之生效；`--no-wake` 可将其移除，之后再次运行 setup 也保持关闭，`--wake` 可重新开启。安装程序只管理自己写入的这一项：不会覆盖不是它写入或已被修改的配置，`uninstall` 和 `--no-wake` 也只移除它自己的那一项。
 
 ## 文件协作
 

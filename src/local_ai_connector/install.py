@@ -162,8 +162,9 @@ def _wake_binding(host: str, data: Path, ctx: Context) -> dict:
     if not bridge.is_file():
         raise InstallError("wake_unavailable", f"The wake-up bridge is missing ({bridge}); run setup from a source "
                            "checkout of the connector.")
+    state = ["--state-dir", str(data / spec["state_dir"])] if spec.get("state_dir") else []
     return {"adapter": "command", "target": "pinned", "timeout": 30, "restore": False,
-            "command": [ctx.runtime, str(bridge), "--state-dir", str(data / spec["state_dir"])]}
+            "command": [ctx.runtime, str(bridge), *state]}
 
 
 def _read_wake(data: Path) -> dict | None:

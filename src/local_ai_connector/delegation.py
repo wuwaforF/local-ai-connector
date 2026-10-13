@@ -22,12 +22,44 @@ def _target_arguments(target_chat, binding_revision, *, required=False):
     return arguments
 
 
+async def _pair_request(ctx, call, decide_binding, label, request_key):
+    """The binding a delegation's approval also grants: this chat receives tasks sent to its own app.
+
+    Created before the task so the approval can show it. It takes effect only through the
+    approval of this task, in this chat; it grants no task permission itself.
+    """
+    if label is None:
+        return None
+    require(decide_binding is not None, "pairing_unavailable",
+            "This app gives the connector no trusted chat identity, so this chat cannot be bound; nothing was sent.")
+    key = "pair:" + hashlib.sha256((request_key + "\0" + label).encode()).hexdigest()[:40]
+    return await call(ctx, action="bind_request", label=label, key=key)
+
+
+async def _apply_pairing(ctx, decide_binding, pairing, decision):
+    if pairing is None:
+        return {}
+    if pairing["state"] != "pending":
+        return {"this_chat_bound": pairing}
+    return {"this_chat_bound": await decide_binding(ctx, pairing["request"], decision)}
+
+
+def _pairing_not_applied(pairing):
+    if pairing is None or pairing["state"] != "pending":
+        return {} if pairing is None else {"this_chat_bound": pairing}
+    return {"this_chat_bound": {**pairing, "state": "not_applied",
+                                "detail": "Binding this chat applies only with the approval that showed it. Bind it with "
+                                          "connector_bind_this_chat instead."}}
+
+
 async def delegate_with_host_permission(ctx, call, decide, target, message, request_key, *, reply_to=None, reply=None,
                                         conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False,
-                                        target_chat=None, binding_revision=None):
+                                        target_chat=None, binding_revision=None, bind_this_chat_as=None, decide_binding=None):
     """Only for an explicitly configured host enforcing mandatory tool permission."""
     require(reply_to is None and reply is None, "invalid_reply",
             "Continue an approved channel through connector_send and connector_receive.")
+    # The host's permission prompt shows bind_this_chat_as with the other arguments.
+    pairing = await _pair_request(ctx, call, decide_binding, bind_this_chat_as, request_key)
     # The configured host gates tools/call before arrival. This is not an
     # elicitation receipt and must be audited as a different trust boundary.
     if archive_source is not None:
@@ -39,12 +71,15 @@ async def delegate_with_host_permission(ctx, call, decide, target, message, requ
                           **({'selected_conversation': selected_conversation} if selected_conversation is not None else {}),
                           **_target_arguments(target_chat, binding_revision, required=not binding_only))
     conversation = task.get('conversation', {'mode': conversation_mode, 'created': False})
+    paired = _pairing_not_applied(pairing)
     if task["status"] == "pending":
         task = await decide(ctx, task["id"], "accept")
+        if task["status"] in ("active", "closed"):
+            paired = await _apply_pairing(ctx, decide_binding, pairing, "accept")
     if task["status"] == "closed":
         result = await call(ctx, action="result", channel=task["id"])
-        return {**result, "request_key": request_key, "next_tool": None}
-    return {"state": task["status"], "channel": task["id"], "request_key": request_key,
+        return {**result, "request_key": request_key, "next_tool": None, **paired}
+    return {**paired, "state": task["status"], "channel": task["id"], "request_key": request_key,
             "conversation": conversation, **({"target_chat": task["target_chat"]} if "target_chat" in task else {}),
             "next_tool": "connector_receive" if task["status"] == "active" else None,
             "detail": "Continue this channel with receive/send/finish. Stored messages do not prove worker execution."}
@@ -119,7 +154,7 @@ async def continue_task(ctx, call, channel, message, request_key, timeout_second
 
 async def delegate(ctx, call, decide, target, message, request_key, timeout_seconds=180, *, reply_to=None, reply=None,
                    mcp_locale="zh-CN", conversation_mode="existing", archive_source=None, selected_conversation=None, binding_only=False,
-                   target_chat=None, binding_revision=None):
+                   target_chat=None, binding_revision=None, bind_this_chat_as=None, decide_binding=None):
     if mcp_locale not in ("zh-CN", "en-US"):
         raise ValueError("mcp_locale must be zh-CN or en-US")
 
@@ -143,6 +178,8 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
             "host_confirmation_unavailable", text("此连接不支持聊天内确认；任务未投递，请检查宿主的 form elicitation 支持",
                                                   "This connection does not support confirmation in chat. The task was not delivered; check the host's form elicitation support."))
 
+    pairing = await _pair_request(ctx, call, decide_binding, bind_this_chat_as, request_key)
+    paired = _pairing_not_applied(pairing)
     # Fixed consent lifetime makes replay independent of the caller's current wait budget.
     if archive_source is not None:
         task = await call(ctx, action="archive_open", key=request_key, **archive_source)
@@ -180,6 +217,17 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
                                 "使用已登记的既有聊天；本操作不会新建应用聊天。"),
             "\n\nConversation: " + ("Create a new native chat and keep subsequent channel rounds in that chat." if conversation_mode == "new" else
                                     "Use the registered existing chat. This does not create a native chat."))
+        if pairing is not None and pairing["state"] == "pending":
+            replaces = pairing["replaces"]
+            prompt += text(
+                f"\n\n同时绑定本聊天：今后发给 {pairing['endpoint']} 的任务送到本聊天，标签 {pairing['label']}（{pairing['chat']}）"
+                + (f"，替换 {replaces['label']}（{replaces['chat']}，版本 {replaces['revision']}）" if replaces else "")
+                + "。这些任务仍须在发起它们的应用中逐个批准；拒绝或取消本任务也不会绑定。",
+                f"\n\nAlso bind this chat: tasks sent to {pairing['endpoint']} will come to this chat, labelled "
+                f"{pairing['label']} ({pairing['chat']})"
+                + (f", replacing {replaces['label']} ({replaces['chat']}, revision {replaces['revision']})" if replaces else "")
+                + ". Each of those tasks still needs approval in the app that starts it. Declining or cancelling this task "
+                  "binds nothing.")
         selected = task.get('conversation', {}).get('selected')
         if selected is not None:
             prompt += text(
@@ -263,8 +311,11 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
                 return {**current, "decision": decision, "decision_applied": False,
                         "detail": text("通道状态已变化，本次决定未生效；请以返回的实际状态为准",
                                        "The channel state changed, so this decision was not applied. Use the actual state returned here.")}
+            if task["status"] in ("active", "closed", "denied", "revoked") and pairing is not None:
+                paired = await _apply_pairing(ctx, decide_binding, pairing, decision if task["status"] in ("active", "closed")
+                                              else "decline")
             if decision != "accept":
-                return {"state": task["status"], "channel": channel, "decision": decision,
+                return {**paired, "state": task["status"], "channel": channel, "decision": decision,
                         "host_response_meta": confirmation.meta,
                         "detail": text("宿主未确认任务；decision 及元数据为宿主返回值，不能据此认定用户手动操作",
                                        "The host did not confirm the task. The decision and metadata came from the host and do not establish that the user acted manually.")}
@@ -273,7 +324,7 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
         return await call(ctx, action='result', channel=channel)
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     cursor = 0
-    running = {"state": "running", "channel": channel, "request_key": request_key,
+    running = {**paired, "state": "running", "channel": channel, "request_key": request_key,
                "detail": text("本次等待已到时，尚未确认完成；复用原任务内容、request_key 及本次补充回复继续等待",
                               "This wait timed out before completion was confirmed. Reuse the original task content, request_key, and any follow-up response to keep waiting.")}
     try:
@@ -322,7 +373,7 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
                             finished = True
                     if finished:
                         await ctx.report_progress(2, message=text("工作者已回复", "The worker has replied."))
-                        return {"state": "completed", "channel": channel, "answer": result["answer"],
+                        return {**paired, "state": "completed", "channel": channel, "answer": result["answer"],
                                 "conversation": result.get("conversation", {"mode": "existing", "created": False}),
                                 "next_round": None if archive_source is not None else {"tool": "connector_continue", "channel": channel}}
                 if result["state"] not in ("pending", "active"):
@@ -335,7 +386,7 @@ async def delegate(ctx, call, decide, target, message, request_key, timeout_seco
                 cursor = received["cursor"]
                 questions = [m for m in received["messages"] if m["kind"] == "question" and not m["resolved"]]
                 if questions:
-                    return {"state": "input_required", "channel": channel,
+                    return {**paired, "state": "input_required", "channel": channel,
                             "questions": questions,
                             "detail": text("工作者需要补充信息；用 reply_to 和 reply 回复对应问题",
                                            "The worker needs more information. Use reply_to and reply to answer the corresponding question.")}
