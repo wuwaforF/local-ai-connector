@@ -333,3 +333,62 @@ def test_archive_lookup_uses_newest_store_that_knows_the_thread(tmp_path):
     codex_store(tmp_path, archived=False, version=6)
     assert bridge._archived(THREAD_ID, tmp_path) is False
     assert bridge._archived(THREAD_ID, Path('relative-codex-home')) is False
+
+
+PINNED = {'session': 'codex:' + THREAD_ID}
+
+
+def test_pinned_session_target_checks_the_thread_and_not_a_workspace(monkeypatch, tmp_path):
+    patch_snapshot(monkeypatch, snapshot(cwd='/any/workspace'), FakeConnection())
+    assert bridge.handle({'op': 'confirm', 'target': PINNED}) == {'ok': True, 'target': PINNED}
+    assert bridge.handle({'op': 'status', 'target': PINNED}) == {'ok': True, 'state': 'idle'}
+
+
+def test_pinned_session_target_rejects_another_thread(monkeypatch):
+    other = dict(snapshot())
+    other['params'] = {**other['params'], 'conversationId': 'bbbbbbbb-cdef-4abc-8def-abcdefabcdef'}
+    patch_snapshot(monkeypatch, other, FakeConnection())
+    assert bridge.handle({'op': 'confirm', 'target': PINNED})['error'] == 'stale_target'
+
+
+def test_pinned_session_send_records_the_session_and_starts_one_turn(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    patch_snapshot(monkeypatch, snapshot(), connection)
+    request = {'op': 'send', 'target': PINNED, 'dispatch_id': DISPATCH_ID, 'text': WAKE}
+
+    assert bridge.handle(request, state_dir=tmp_path / 'state') == {'ok': True, 'accepted': True, 'host_ref': 'turn-id'}
+    record = json.loads((tmp_path / 'state' / f'{DISPATCH_ID}.json').read_text())
+    assert record['target'] == PINNED and record['state'] == 'acknowledged'
+    [start] = [r for r in connection.requests if r['method'] == 'thread-follower-start-turn']
+    assert start['params']['conversationId'] == THREAD_ID
+    assert bridge.handle({'op': 'reconcile', 'target': PINNED, 'dispatch_id': DISPATCH_ID},
+                         state_dir=tmp_path / 'state') == {'ok': True, 'result': 'delivered'}
+
+
+def test_pinned_session_restore_opens_the_exact_thread(monkeypatch):
+    def cold(*_args):
+        raise base_probe.ProbeError('cold', kind='no_owner')
+    opens = []
+    monkeypatch.setattr(bridge.status_probe, 'with_snapshot', cold)
+    monkeypatch.setattr(bridge.subprocess, 'run',
+                        lambda argv, **_k: opens.append(argv) or type('R', (), {'returncode': 0})())
+    assert bridge.handle({'op': 'restore', 'target': PINNED}) == {'ok': True, 'restored': True}
+    assert opens == [['/usr/bin/open', '-b', 'com.openai.codex', 'codex://threads/' + THREAD_ID]]
+
+
+def test_archived_pinned_session_is_refused(monkeypatch, tmp_path):
+    codex_store(tmp_path, archived=True)
+    monkeypatch.setattr(bridge.status_probe, 'with_snapshot', lambda *_a: pytest.fail('archived thread probed'))
+    assert bridge.handle({'op': 'status', 'target': PINNED}, codex_home=tmp_path)['error'] == 'archived'
+
+
+@pytest.mark.parametrize('target', [
+    {'session': 'antigravity:' + THREAD_ID},
+    {'session': 'codex:not-a-uuid'},
+    {'session': 'codex:' + THREAD_ID.upper()},
+    {'session': 42},
+    {'session': 'codex:' + THREAD_ID, 'workspace': '/workspace/project'},
+])
+def test_pinned_session_target_must_be_one_exact_codex_thread(monkeypatch, target):
+    monkeypatch.setattr(bridge.status_probe, 'with_snapshot', lambda *_a: pytest.fail('invalid target probed'))
+    assert bridge.handle({'op': 'confirm', 'target': target})['error'] == 'rejected'

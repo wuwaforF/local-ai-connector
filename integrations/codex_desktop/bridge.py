@@ -36,8 +36,24 @@ class BridgeError(ValueError):
 
 
 def _target(value: object) -> dict:
+    """A fixed owner-written target, or the chat pinned when a task was approved.
+
+    The pinned form names the chat by the session Codex supplied on its own tool calls
+    (`codex:<thread id>`); its identity is the thread ID alone.
+    """
+    if isinstance(value, dict) and set(value) == {"session"}:
+        session = value["session"]
+        namespace, _, thread_id = session.partition(":") if isinstance(session, str) else ("", "", "")
+        if namespace != "codex":
+            raise BridgeError("rejected", "The pinned chat is not a Codex chat")
+        try:
+            if str(UUID(thread_id)) != thread_id:
+                raise ValueError
+        except ValueError:
+            raise BridgeError("rejected", "The pinned thread ID is invalid") from None
+        return {"session": session}
     if not isinstance(value, dict) or set(value) != {"thread_id", "workspace"}:
-        raise BridgeError("rejected", "Explicit thread_id and workspace are required")
+        raise BridgeError("rejected", "Explicit thread_id and workspace, or a pinned Codex session, are required")
     thread_id, workspace = value["thread_id"], value["workspace"]
     try:
         if not isinstance(thread_id, str) or str(UUID(thread_id)) != thread_id:
@@ -47,6 +63,10 @@ def _target(value: object) -> dict:
     if not isinstance(workspace, str) or not Path(workspace).is_absolute() or "\0" in workspace:
         raise BridgeError("rejected", "The pinned workspace must be an absolute path")
     return {"thread_id": thread_id, "workspace": workspace}
+
+
+def _thread_id(target: dict) -> str:
+    return target["session"].partition(":")[2] if "session" in target else target["thread_id"]
 
 
 def _archived(thread_id: str, codex_home: Path) -> bool:
@@ -173,8 +193,9 @@ def _write_ack(path: Path, dispatch_id: str, target: dict, turn_id: str) -> None
 
 
 def _snapshot_matches(target: dict, message: dict) -> dict:
-    metadata = status_probe._metadata(message, target["thread_id"])
-    if metadata.get("conversation_id") != target["thread_id"] or metadata.get("cwd") != target["workspace"]:
+    metadata = status_probe._metadata(message, _thread_id(target))
+    if metadata.get("conversation_id") != _thread_id(target) or (
+            "workspace" in target and metadata.get("cwd") != target["workspace"]):
         raise BridgeError("stale_target", "Codex Desktop thread or workspace does not match the pinned target")
     return metadata
 
@@ -209,8 +230,8 @@ def _start_turn(connection, client_id: str, owner_id: str, target: dict,
         connection, request_id=str(uuid4()), source_client_id=client_id,
         target_client_id=owner_id, method="thread-follower-start-turn",
         version=TURN_START_VERSION,
-        params={"conversationId": target["thread_id"], "turnStart": {
-            "request": {"threadId": target["thread_id"], "input": [
+        params={"conversationId": _thread_id(target), "turnStart": {
+            "request": {"threadId": _thread_id(target), "input": [
                 {"type": "text", "text": text, "text_elements": []},
             ]},
             "context": {"inheritThreadSettings": True},
@@ -239,7 +260,7 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
         if set(request) != expected_fields:
             raise BridgeError("rejected", "Unexpected bridge request fields")
         target = _target(request.get("target"))
-        if op != "reconcile" and _archived(target["thread_id"], codex_home or DEFAULT_CODEX_HOME):
+        if op != "reconcile" and _archived(_thread_id(target), codex_home or DEFAULT_CODEX_HOME):
             raise BridgeError("archived", "The pinned Codex Desktop thread is archived; unarchive it or pin another chat")
 
         if op == "restore":
@@ -249,12 +270,12 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
                 def already_loaded(_connection, _client_id, _owner_id, message):
                     _snapshot_matches(target, message)
                     return {"ok": True, "restored": False}
-                return status_probe.with_snapshot(target["thread_id"], socket_path, already_loaded)
+                return status_probe.with_snapshot(_thread_id(target), socket_path, already_loaded)
             except probe.ProbeError as exc:
                 if exc.kind not in ("no_owner", "socket_missing", "startup", "owner_discovery_timeout"):
                     raise
             result = subprocess.run(
-                ["/usr/bin/open", "-b", "com.openai.codex", "codex://threads/" + target["thread_id"]],
+                ["/usr/bin/open", "-b", "com.openai.codex", "codex://threads/" + _thread_id(target)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, timeout=5, check=False,
             )
@@ -290,7 +311,7 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
                 _write_ack(path, dispatch_id, target, turn_id)
                 return {"ok": True, "accepted": True, "host_ref": turn_id}
 
-            return status_probe.with_snapshot(target["thread_id"], socket_path, send_if_idle)
+            return status_probe.with_snapshot(_thread_id(target), socket_path, send_if_idle)
 
         def inspect(_connection, _client_id, _owner_id, message):
             metadata = _snapshot_matches(target, message)
@@ -300,7 +321,7 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
             return {"ok": True, "state": _host_state(metadata, conversation)}
 
         if op in ("confirm", "status"):
-            return status_probe.with_snapshot(target["thread_id"], socket_path, inspect)
+            return status_probe.with_snapshot(_thread_id(target), socket_path, inspect)
 
         record_dir = _state_directory(state_dir)
         record = _read_record(_record_path(record_dir, request.get("dispatch_id")),

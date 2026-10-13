@@ -221,6 +221,14 @@ uv run local-ai-connector --data .connector peer-add another-worker \
 
 端点“已登记”不等于 AI 在线。接收方可以主动调用 MCP 等待；已配置唤醒适配器时，服务也可在批准后请求宿主启动接收。适配器默认关闭，需要明确目标与配置；详见 [适配器契约](GENERALIZATION.md)。等待在程序内部完成；授权到期、拒绝或撤销会返回明确状态。
 
+`wakeup.json` 中绑定的 `target` 可以是维护者写定的对象（固定一个聊天），也可以是 `"pinned"`。使用 `"pinned"` 时，每个任务唤醒的是批准时固定的那个聊天，以 `{"session": "<命名空间>:<编号>"}` 传给桥接程序：
+
+- 端点必须有可信的聊天身份（`chat_identity`），否则唤醒会被停用并记录 `wakeup_config_error`。
+- 重新绑定不会改变已批准任务的去向：待重试的唤醒仍发往该任务固定的聊天。
+- 没有固定聊天的任务不会被唤醒（`wake_target_unpinned`）。
+- 同一端点一次只进行一个唤醒，即使任务固定在不同聊天。
+- 目前只有 Codex Desktop 桥接程序支持固定目标（`{"session": "codex:<线程编号>"}`）。它只按线程编号核对身份，并拒绝已归档的线程（`wake_host_archived`）。
+
 ## 文件协作
 
 代码并行修改优先使用 Git 自带的独立 worktree。连接器不接管工作者的成果生产。

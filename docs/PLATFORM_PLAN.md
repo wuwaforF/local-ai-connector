@@ -234,6 +234,48 @@ hook denying the live server):
 - Approvals in this test were human, but the initiating side was a terminal stand-in, not a desktop.
 - Not yet run on Windows or Linux Antigravity.
 
+### 4.5 Codex direct wake-up of the pinned chat: validated on macOS (2026-10-09)
+
+Codex Desktop 26.1002.52244 (bundled CLI 0.162.0-alpha.2), macOS. Code under test: PR #13
+(`research/codex-direct-wake/`). No relay chat was involved.
+
+**Isolation.** `setup codex --profile cwtest` ran under a throwaway home. Its entry was loaded only
+through the test folder's project `.codex/config.toml`, which also set the live `local_ai_connector`
+to `enabled = false`. Codex applies project config only in a trusted folder; with the bundled CLI the
+override held in the trusted folder and not elsewhere or in an untrusted copy. In Desktop, the test
+chats listed only `local_ai_connector_cwtest`, and every connector call went through it. The global
+`~/.codex/config.toml` was not written. The profile's `wakeup.json` used `"target": "pinned"`.
+
+**Run** (two chats, A and B, in the test folder; terminal stand-in initiator, each task approved by
+typing `yes`):
+
+- **Wake the bound chat.** A bound itself (revision 1), and t1 was approved and pinned to A.
+  - The connector woke A 1.1 s after approval, and Desktop acknowledged in 0.18 s.
+  - A started a turn by itself, collected t1 with its own identity, and answered `437`, about
+    16 s after approval.
+  - B had no turn.
+- **Isolation.** B's explicit receive of t1 was refused with `wrong_session` (recorded as an
+  incident), and B's general receive returned nothing.
+- **Re-binding.** B bound itself (revision 2). t2 was pinned to B, the connector woke B, and B
+  answered `493`. A had no turn.
+- **Busy chat and re-binding while waiting.**
+  - t3 was approved and pinned to B while B was running `sleep 90`. The connector recorded
+    `wake_deferred_busy` and sent nothing.
+  - A re-bound itself (revision 3) while B was still busy.
+  - When B became idle, the connector woke B, not A, about 6 s later, and B answered `713`.
+    A had no wake turn.
+- Evidence agrees across the profile database (bindings, pins, dispatch stages from intent to
+  replied, incidents) and both chat transcripts in Codex's own store.
+
+**Limits:**
+
+- Desktop's thread IPC is undocumented and was exercised on this version only.
+- The pinned chat has to be loaded in Desktop. Cold restore (`restore`) and the archived-chat
+  refusal were not exercised here.
+- Wakes run one at a time per endpoint.
+- `setup` does not yet write the wake-up configuration.
+- macOS only; Windows and Linux Desktop IPC transports are unknown.
+
 ## 5. How support is reported
 
 Each row is one **host × OS × mode** combination:
@@ -335,6 +377,10 @@ Not verified by Increment 1:
 ### Increment 2: automatic wake-up on the pinned target
 
 - The dispatcher reads the pinned target, and `wakeup.json` keeps only legacy static bindings.
+  - **Started 2026-10-09:** a binding with `"target": "pinned"` wakes the chat each task was
+    pinned to at approval, and the Codex Desktop bridge accepts that chat as
+    `{"session": "codex:<thread id>"}`. Validated on a real Codex Desktop on macOS (section 4.5);
+    `setup` integration is next.
 - **Claude inbox adapter:**
   - On macOS, Linux and WSL 2 it uses the Unix socket without a token.
   - On Windows it uses the named pipe with a token from an explicitly enrolled session hook.
