@@ -127,7 +127,7 @@ class CommandAdapter(WakeAdapter):
             raise AdapterError("ambiguous" if ambiguous else "malformed", f"bridge {op} reply was not valid JSON")
         if not reply["ok"]:
             kind = reply.get("error")
-            if kind not in ("rejected", "unavailable", "stale_target", "ambiguous",
+            if kind not in ("rejected", "unavailable", "stale_target", "ambiguous", "archived",
                             "no_owner", "socket_missing", "startup", "owner_discovery_timeout",
                             "permissions", "protocol", "invalid_socket"):
                 kind = "ambiguous" if ambiguous else "malformed"
@@ -703,7 +703,10 @@ class Dispatcher:
                 binding.suspended = "stale_target"
                 self.broker.record_incident(peer, "wake_stale_target", "binding suspended until wakeup.json is corrected")
                 return "stale"
-            self.incident(peer, "wake_host_" + kind, "target could not be confirmed; nothing was sent")
+            # An archived chat cannot be woken or restored; keep checking so unarchiving it recovers.
+            self.incident(peer, "wake_host_" + kind,
+                          "the pinned chat is archived; unarchive it or pin another chat; nothing was sent"
+                          if kind == "archived" else "target could not be confirmed; nothing was sent")
             self.not_before[peer] = self.clock() + self.busy_retry
             if allow_restore and binding.restore_enabled and message_ids and kind in ("no_owner", "socket_missing", "startup", "owner_discovery_timeout"):
                 return await self._restore(binding, target, message_ids)
@@ -743,7 +746,7 @@ class Dispatcher:
         except (AdapterError, TimeoutError, asyncio.TimeoutError) as exc:
             now = self.clock()
             kind = exc.kind if isinstance(exc, AdapterError) else "ambiguous"
-            if kind in ("rejected", "unavailable", "no_owner", "socket_missing", "startup", "owner_discovery_timeout"):
+            if kind in ("rejected", "unavailable", "archived", "no_owner", "socket_missing", "startup", "owner_discovery_timeout"):
                 # Definitive "not delivered". Keep the same dispatch id for any later retry.
                 attempts = self.store.db.execute("SELECT attempts FROM dispatches WHERE id=?", (did,)).fetchone()[0]
                 retry = getattr(exc, "retryable", False) and attempts < self.max_attempts

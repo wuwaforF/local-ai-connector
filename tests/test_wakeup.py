@@ -821,6 +821,16 @@ async def test_command_adapter_preserves_owner_discovery_timeout_kind_and_retrya
     assert error.value.retryable is True
 
 
+async def test_command_adapter_preserves_archived_kind(tmp_path):
+    script = tmp_path / 'archived-bridge.py'
+    script.write_text('import json\nprint(json.dumps({"ok": False, "error": "archived", "detail": "thread is archived"}))\n')
+
+    with pytest.raises(AdapterError) as error:
+        await CommandAdapter([sys.executable, str(script)]).confirm(TARGET)
+
+    assert error.value.kind == 'archived' and error.value.retryable is False
+
+
 # --- configuration and server integration ---------------------------------------------------
 def write_config(path, value, mode=0o600):
     target = path / "wakeup.json"
@@ -981,6 +991,22 @@ async def test_incompatible_or_unverified_failure_never_restores(recovery, failu
     e.cold, e.channel = failure, await approved(e.broker)
     await e.d.step()
     assert e.restore_calls == [] and e.host.sent == []
+
+
+@pytest.mark.asyncio
+async def test_archived_target_never_restores_and_recovers_once_unarchived(recovery):
+    e = recovery
+    e.cold, e.channel = 'archived', await approved(e.broker)
+    await e.d.step()
+    assert e.restore_calls == [] and e.host.sent == []
+    assert e.d.bindings['zcode'].suspended is None
+    detail = e.broker.db.execute("SELECT detail FROM incidents WHERE code='wake_host_archived'").fetchone()[0]
+    assert 'unarchive it or pin another chat' in detail
+
+    e.cold = None
+    e.now[0] += 10
+    await e.d.step()
+    assert e.restore_calls == [] and len(e.host.sent) == 1
 
 
 @pytest.mark.asyncio
