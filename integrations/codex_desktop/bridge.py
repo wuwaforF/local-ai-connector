@@ -27,6 +27,9 @@ DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-ai-connector" / "c
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 MAX_WAKE_TEXT = 1000
 TURN_START_VERSION = 2
+# Desktop acknowledges a start-turn only after it has resumed the thread, which took about 6 s for a
+# chat left idle overnight. Kept inside the connector's 30 s bridge timeout.
+START_TURN_TIMEOUT_SECONDS = 20.0
 
 
 class BridgeError(ValueError):
@@ -236,7 +239,7 @@ def _start_turn(connection, client_id: str, owner_id: str, target: dict,
             ]},
             "context": {"inheritThreadSettings": True},
         }},
-        deadline=time.monotonic() + probe.TOTAL_TIMEOUT_SECONDS,
+        deadline=time.monotonic() + START_TURN_TIMEOUT_SECONDS,
     )
     return _turn_ack(response, owner_id)
 

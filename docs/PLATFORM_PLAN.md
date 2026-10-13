@@ -115,9 +115,10 @@ host × OS implementations.
    - Core CI runs on macOS, Windows and Ubuntu from Increment 1.
    - Real-desktop acceptance goes macOS → Windows → Linux.
    - Windows core portability is not deferred.
-3. **Codex automatic wake-up on macOS** is an explicitly enabled experiment, off by default, with
-   capability and version checks. A documented app-server `turn/start` is not evidence that it
-   can wake a chat owned by the desktop app.
+3. **Codex automatic wake-up on macOS** is on by default, with `setup codex --no-wake` to turn it
+   off (owner decision, 2026-10-10; it was first adopted as an opt-in experiment). It relies on
+   capability checks, and a host-version contract is still to come. A documented app-server
+   `turn/start` is not evidence that it can wake a chat owned by the desktop app.
 4. **Claude on Windows.** A session hook may hand the session's messaging token to the service,
    with these conditions:
    - It applies only to a target session the user explicitly enrolled.
@@ -273,8 +274,14 @@ typing `yes`):
 - The pinned chat has to be loaded in Desktop. Cold restore (`restore`) and the archived-chat
   refusal were not exercised here.
 - Wakes run one at a time per endpoint.
-- `setup` does not yet write the wake-up configuration.
 - macOS only; Windows and Linux Desktop IPC transports are unknown.
+
+**Re-check through `setup codex --wake`** (2026-10-10, same chats). Setup's binding replaced the
+hand-written one, and the service restarted to load it. Chat A (revision 3) woke by itself and
+answered `378`; B had no turn. Desktop started the turn about 6 s after the request, while
+resuming a chat left idle overnight, so the bridge's 5 s acknowledgment wait recorded the send as
+`sent_unconfirmed`. The connector still observed A collect and answer the task and never resent.
+The start-turn wait is now 20 s, inside the connector's 30 s bridge timeout.
 
 ## 5. How support is reported
 
@@ -379,15 +386,15 @@ Not verified by Increment 1:
 - The dispatcher reads the pinned target, and `wakeup.json` keeps only legacy static bindings.
   - **Started 2026-10-09:** a binding with `"target": "pinned"` wakes the chat each task was
     pinned to at approval, and the Codex Desktop bridge accepts that chat as
-    `{"session": "codex:<thread id>"}`. Validated on a real Codex Desktop on macOS (section 4.5);
-    `setup` integration is next.
+    `{"session": "codex:<thread id>"}`. Validated on a real Codex Desktop on macOS (section 4.5).
+  - `setup codex` writes that binding by default on macOS; `--no-wake` turns it off.
 - **Claude inbox adapter:**
   - On macOS, Linux and WSL 2 it uses the Unix socket without a token.
   - On Windows it uses the named pipe with a token from an explicitly enrolled session hook.
   - It honours inbound hold and refuse, and `doctor` reports them.
 - **Antigravity sidecar adapter:** the project-owned hop moves to loopback HTTP with a per-bridge
   token, and the host inbox still uses `agentapi`.
-- **Codex macOS IPC experiment:** off by default.
+- **Codex macOS IPC adapter:** on by default (decision 3).
 - Every adapter has a host-version contract that refuses unknown versions.
 - `docs/SUPPORT.md` is introduced.
 

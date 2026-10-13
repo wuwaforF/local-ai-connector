@@ -8,6 +8,8 @@ Each module provides:
   launch_entry(command, args) -> the entry this installer owns
   owned_view(entry)   the launch keys the installer owns, used to detect user edits
   PERMISSIONS, LIMITATIONS  user guidance; setup never grants permissions itself
+  WAKE (optional)     an opt-in wake-up bridge for the chat pinned at approval: the platforms it
+                      supports, its path in a source checkout, and its private state folder
 """
 from __future__ import annotations
 

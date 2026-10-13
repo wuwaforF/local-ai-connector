@@ -392,3 +392,18 @@ def test_archived_pinned_session_is_refused(monkeypatch, tmp_path):
 def test_pinned_session_target_must_be_one_exact_codex_thread(monkeypatch, target):
     monkeypatch.setattr(bridge.status_probe, 'with_snapshot', lambda *_a: pytest.fail('invalid target probed'))
     assert bridge.handle({'op': 'confirm', 'target': target})['error'] == 'rejected'
+
+
+def test_start_turn_waits_longer_than_discovery_for_a_resuming_thread(monkeypatch, tmp_path):
+    seen = {}
+    real = bridge.probe._send_request
+
+    def send_request(connection, **kwargs):
+        if kwargs["method"] == "thread-follower-start-turn":
+            seen["wait"] = kwargs["deadline"] - bridge.time.monotonic()
+        return real(connection, **kwargs)
+    monkeypatch.setattr(bridge.probe, "_send_request", send_request)
+    patch_snapshot(monkeypatch, snapshot(), FakeConnection())
+    request = {"op": "send", "target": TARGET, "dispatch_id": DISPATCH_ID, "text": WAKE}
+    assert bridge.handle(request, state_dir=tmp_path / "state")["accepted"] is True
+    assert bridge.probe.TOTAL_TIMEOUT_SECONDS < seen["wait"] <= bridge.START_TURN_TIMEOUT_SECONDS < 30

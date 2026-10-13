@@ -228,6 +228,7 @@ uv run local-ai-connector --data .connector peer-add another-worker \
 - 没有固定聊天的任务不会被唤醒（`wake_target_unpinned`）。
 - 同一端点一次只进行一个唤醒，即使任务固定在不同聊天。
 - 目前只有 Codex Desktop 桥接程序支持固定目标（`{"session": "codex:<线程编号>"}`）。它只按线程编号核对身份，并拒绝已归档的线程（`wake_host_archived`）。
+- 在 macOS 上，`setup codex` 默认会写入这项配置，并重启正在运行的服务使之生效；`--no-wake` 可将其移除，之后再次运行 setup 也保持关闭，`--wake` 可重新开启。安装程序只管理自己写入的这一项：不会覆盖不是它写入或已被修改的配置，`uninstall` 和 `--no-wake` 也只移除它自己的那一项。
 
 ## 文件协作
 
