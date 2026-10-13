@@ -63,6 +63,11 @@ def main():
     install.add_argument("--profile", default="default", help="separate installation name (default: default)")
     install.add_argument("--dry-run", action="store_true", help="report what would change without writing")
     install.add_argument("--no-start", action="store_true", help="do not start the service now")
+    waking = install.add_mutually_exclusive_group()
+    waking.add_argument("--wake", dest="wake", action="store_const", const=True, default=None,
+                        help="wake the bound chat when a task is approved (Codex on macOS: the default)")
+    waking.add_argument("--no-wake", dest="wake", action="store_const", const=False,
+                        help="turn automatic wake-up off and keep it off on later runs")
     remove = sub.add_parser("uninstall", help="remove host entries this installation created")
     remove.add_argument("--profile", default="default")
     remove.add_argument("--host", action="append", choices=["codex", "claude", "antigravity"])
@@ -107,7 +112,8 @@ def main():
         from .service import ServiceError
         try:
             if args.command == "setup":
-                report = setup(args.host, profile=args.profile, dry_run=args.dry_run, start_service=not args.no_start)
+                report = setup(args.host, profile=args.profile, dry_run=args.dry_run, start_service=not args.no_start,
+                               wake=args.wake)
             elif args.command == "uninstall":
                 report = uninstall(profile=args.profile, hosts=args.host, purge=args.purge, dry_run=args.dry_run)
             else:

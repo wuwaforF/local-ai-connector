@@ -11,7 +11,7 @@ are in [ARCHITECTURE.md](ARCHITECTURE.md), and platform support with its evidenc
 
 | Command | What it does |
 | --- | --- |
-| `setup <host> [--profile P] [--dry-run] [--no-start]` | Creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. |
+| `setup <host> [--profile P] [--dry-run] [--no-start] [--wake \| --no-wake]` | Creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. For Codex and Claude on macOS it also writes the profile's `wakeup.json` binding that wakes the chat pinned at approval, and restarts a running service to load it. `--no-wake` removes that binding and keeps it off on later runs; `--wake` turns it on again. Elsewhere setup goes on without wake-up. |
 | `doctor [--host H]` | Reports what is ready. Each check says whether it was verified, not checked, or is not supported. |
 | `uninstall [--host H] [--purge]` | Removes only the host entries this installation wrote and that still match what it recorded. `--purge` also deletes the profile's data. |
 | `unbind <endpoint>` | Owner removal of a worker endpoint's bound chat. |
@@ -126,6 +126,10 @@ In both cases the model cannot approve through tool arguments.
 - **Resuming:** on `running`, `approval_timeout` or an interrupted call, repeat the same `request_key`, `target`, `message` and `conversation_mode` to resume. Do not create a new task.
 - **Follow-up questions:** on `input_required`, answer by calling again with `reply_to` (the question `id`) and `reply`.
 - **Next rounds:** use `connector_continue(channel, message, request_key)`. A channel closed for inactivity can resume only within the original authorization; expired, revoked or declined channels never reopen.
+- **Two-way in one approval:** from a chat whose app supplies a chat identity, `bind_this_chat_as: "<label>"` makes the same approval also bind this chat to receive tasks sent to its own app.
+  - The approval shows the binding: as a line in the form, or as the argument in Claude's permission prompt.
+  - Declining the task binds nothing. Replaying an already approved task never adds a binding, and reports `this_chat_bound.state: "not_applied"`.
+  - The result's `this_chat_bound` reports the binding. Tasks sent back still need approval in the app that starts them.
 - **Result:** in a `completed` result, `answer.body` is the worker's actual reply.
 
 `conversation_mode` is required:
@@ -189,6 +193,24 @@ Bridges implement `confirm`, `status`, `send`, `reconcile` and, optionally, `res
 | Codex Desktop | `integrations/codex_desktop/bridge.py` | pinned thread via the desktop's local IPC; optional cold-start `restore` |
 | Claude Desktop Code | `integrations/claude_code/bridge.py` | captured session inbox; status is `unknown`, so it needs `send_when_unknown: true` |
 | Antigravity | `integrations/antigravity/bridge.py` | via `agentapi` inside an Antigravity sidecar; status `unknown` |
+
+A binding's `target` is either an owner-written object (one fixed chat) or `"pinned"`. With `"pinned"`, each task wakes the chat it was pinned to at approval, passed to the bridge as `{"session": "<namespace>:<id>"}`:
+
+- The endpoint needs a trusted chat identity (`chat_identity`), otherwise wake-up is disabled with `wakeup_config_error`.
+- Re-binding never moves an approved task: a pending retry still wakes the chat pinned for it.
+- A task with no pinned chat is not woken (`wake_target_unpinned`).
+- One wake runs at a time per endpoint, even when its tasks are pinned to different chats.
+- The Codex Desktop bridge accepts `{"session": "codex:<thread id>"}`. It checks the thread ID alone, and refuses an archived thread (`wake_host_archived`).
+- The Claude Code bridge accepts `{"session": "claude:<session id>"}`.
+  - It finds the one running process for that session in Claude Code's registry (`~/.claude/sessions`), which also gives its idle or busy status.
+  - It writes the wake message to that session's inbox. The inbox never acknowledges, so a send is recorded as unconfirmed until the chat collects the task.
+  - Claude's own inbox settings can hold or refuse the message.
+- On macOS, `setup codex` and `setup claude` write these bindings for you (`--no-wake` turns them off). Setup owns only that binding: it never overwrites one it did not write or that was edited, and `uninstall` or `--no-wake` removes only its own.
+
+```json
+{"enabled": true, "bindings": {"codex": {"adapter": "command", "target": "pinned",
+  "command": ["/path/to/.venv/bin/python", "/path/to/integrations/codex_desktop/bridge.py"]}}}
+```
 
 Native-conversation providers (`codex_ingress`, `antigravity_sidecar`) in `server.json` allow `conversation_mode="new"` and approved archiving through `connector_archive`. See [examples/configs](../examples/configs/README.md) for placeholder `wakeup.json`, provider, launcher and sidecar files.
 

@@ -304,3 +304,77 @@ def test_failed_or_partial_writes_are_never_retried(inbox, monkeypatch, stage, e
     result = bridge.handle(request(inbox), inbox.record_path)
     assert result["error"] == expected and result.get("retryable", False) is False
     assert len(writes) == (0 if stage == "connect" else 1)
+
+
+# --- pinned sessions: resolved through Claude Code's registry of running sessions ------------
+@pytest.fixture
+def registry(inbox, tmp_path):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+
+    def add(pid=os.getpid(), session=SESSION, status="idle", socket_path=None):
+        path = sessions / f"{pid}.json"
+        path.write_text(json.dumps({"pid": pid, "sessionId": session, "cwd": "/work", "status": status,
+                                    "messagingSocketPath": str(socket_path or inbox.path)}))
+        return path
+
+    return SimpleNamespace(dir=sessions, add=add, inbox=inbox, target={"session": "claude:" + SESSION})
+
+
+def pinned_request(registry, op="send"):
+    return {"op": op, "target": registry.target, "dispatch_id": DISPATCH,
+            "text": f"[local-ai-connector wake {DISPATCH}] Retrieve the approved message."}
+
+
+@pytest.mark.parametrize("status,expected", [("idle", "idle"), ("busy", "busy"), ("starting", "unknown")])
+def test_pinned_session_confirms_and_reports_registry_status(registry, status, expected):
+    registry.add(status=status)
+    assert bridge.handle(pinned_request(registry, "confirm"), sessions_dir=registry.dir) == {"ok": True, "target": registry.target}
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir) == {"ok": True, "state": expected}
+
+
+def test_pinned_session_send_writes_one_frame_for_that_session(registry):
+    registry.add()
+    reply = bridge.handle(pinned_request(registry), sessions_dir=registry.dir)
+    assert reply["ok"] is False and reply["error"] == "ambiguous"  # the inbox never acknowledges
+    frame = read_frame(registry.inbox)
+    assert frame["session_id"] == SESSION and frame["msg_id"] == DISPATCH and frame["type"] == "user"
+    assert DISPATCH in frame["message"]["content"]
+
+
+def test_pinned_session_that_is_not_running_or_ambiguous_is_unavailable(registry):
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["error"] == "unavailable"
+    registry.add(pid=99999999)  # the registry outlived its process
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["error"] == "unavailable"
+    registry.add()
+    registry.add(pid=os.getppid())  # two running processes claim the session
+    reply = bridge.handle(pinned_request(registry), sessions_dir=registry.dir)
+    assert reply["error"] == "unavailable" and "More than one" in reply["detail"]
+
+
+def test_pinned_session_ignores_other_sessions_and_unsafe_inboxes(registry):
+    registry.add(session="33333333-3333-4333-8333-333333333333")
+    registry.inbox.path.chmod(0o666)
+    registry.add(pid=os.getppid())
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["error"] == "unavailable"
+
+
+@pytest.mark.parametrize("target", [{"session": "codex:" + SESSION}, {"session": "claude:not-a-uuid"},
+                                    {"session": "claude:" + SESSION, "workspace": "/work"}])
+def test_pinned_session_must_be_one_exact_claude_session(registry, target):
+    registry.add()
+    reply = bridge.handle({**pinned_request(registry, "confirm"), "target": target}, sessions_dir=registry.dir)
+    assert reply == {"ok": False, "error": "rejected", "detail": "Invalid bridge request"}
+
+
+def test_pinned_inbox_replaced_while_connecting_is_never_written(registry, monkeypatch):
+    registry.add()
+    original = bridge.pinned_session
+    calls = []
+
+    def moved(target, sessions_dir):
+        snapshot = original(target, sessions_dir)
+        calls.append(1)
+        return snapshot if len(calls) == 1 else {**snapshot, "socket_ino": snapshot["socket_ino"] + 1}
+    monkeypatch.setattr(bridge, "pinned_session", moved)
+    assert bridge.handle(pinned_request(registry), sessions_dir=registry.dir)["error"] == "stale_target"
