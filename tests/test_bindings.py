@@ -170,7 +170,7 @@ async def test_tasks_must_name_the_current_binding_where_the_prompt_shows_only_a
     assert error.value.code == "target_chat_required"
     with pytest.raises(ConnectorError) as error:
         await task(b, require_target=True, expected_revision=1, expected_label="Someone else")
-    assert error.value.code == "target_binding_changed"
+    assert error.value.code == "target_label_mismatch" and "'Reviewer'" in str(error.value)
     with pytest.raises(ConnectorError) as error:
         await task(b, expected_revision=2)
     assert error.value.code == "target_binding_changed"
@@ -267,3 +267,11 @@ async def test_delivery_credentials_are_never_persisted_or_exposed(env):
         assert restarted.bindings.credentials.get("claude", CLAUDE_CHAT, 1) is None
     finally:
         restarted.close()
+
+
+async def test_target_chat_also_accepts_the_short_chat_id_that_status_shows(env):
+    from local_ai_connector.bindings import session_hint
+    b = env.broker
+    await bind(b, "codex", CHAT_A, "Reviewer")
+    opened = await task(b, key="by-hint", require_target=True, expected_revision=1, expected_label=session_hint(CHAT_A))
+    assert opened["target_chat"]["label"] == "Reviewer"
