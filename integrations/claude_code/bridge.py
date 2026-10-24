@@ -6,18 +6,20 @@ resolved through Claude Code's own registry of running sessions, which also says
 session is idle or busy.
 """
 import argparse
+import calendar
 import json
 import os
 from pathlib import Path
 import socket
-import stat
 import sys
+import time
 from uuid import UUID
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'src'))
-from local_ai_connector.claude_binding import TARGET_FIELDS, StaleTarget, socket_identity, confirmed_session
+from local_ai_connector import os_adapter
+from local_ai_connector.claude_binding import TARGET_FIELDS, StaleTarget, confirmed_session
 
 SOCKET_TIMEOUT = 5
 DEFAULT_SESSIONS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "sessions"
@@ -27,6 +29,14 @@ class Unavailable(Exception):
     pass
 
 
+def _started_at(text):
+    """Claude Code records procStart like "Sat Oct 24 15:30:23 2026", in UTC; None if it differs."""
+    try:
+        return float(calendar.timegm(time.strptime(text, "%a %b %d %H:%M:%S %Y")))
+    except (TypeError, ValueError):
+        return None
+
+
 def pinned_session(target, sessions_dir):
     """The one running Claude Code process that holds a pinned session, read from Claude Code's registry."""
     if not isinstance(target, dict) or set(target) != {"session"} or not isinstance(target["session"], str):
@@ -34,17 +44,16 @@ def pinned_session(target, sessions_dir):
     namespace, _, session_id = target["session"].partition(":")
     if namespace != "claude" or str(UUID(session_id)) != session_id:
         raise ValueError("The pinned session is not a Claude Code session")
-    live = []
+    if not os_adapter.supports("local_ipc"):
+        raise Unavailable("Claude Code's session inbox is not supported on this platform yet")
+    live, unreadable = [], 0
     for path in sorted(Path(sessions_dir).glob("*.json")):
         if not path.stem.isdigit():
             continue
         try:
-            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "r") as file:
-                info = os.fstat(file.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                    continue
-                record = json.load(file)
+            record = json.loads(os_adapter.read_owned_text(path))  # UTF-8 whatever the locale
         except (OSError, UnicodeError, ValueError):
+            unreadable += 1
             continue
         if not isinstance(record, dict) or record.get("sessionId") != session_id:
             continue
@@ -52,21 +61,29 @@ def pinned_session(target, sessions_dir):
         if (type(pid) is not int or str(pid) != path.stem or not isinstance(socket_path, str)
                 or not Path(socket_path).is_absolute() or "\0" in socket_path):
             continue
-        try:
-            os.kill(pid, 0)  # the registry can outlive its process
-            inbox = socket_identity(socket_path)
-        except (OSError, StaleTarget):
+        if not os_adapter.own_process_alive(pid):  # the registry can outlive its process
             continue
-        live.append({"pid": pid, "socket_path": socket_path, "socket_dev": inbox.st_dev,
-                     "socket_ino": inbox.st_ino, "status": record.get("status")})
+        recorded, actual = _started_at(record.get("procStart")), os_adapter.process_start_time(pid)
+        if recorded is not None and actual is not None and abs(recorded - actual) > 5:
+            continue  # the PID now belongs to another process
+        try:
+            identity = os_adapter.endpoint_identity(socket_path)
+        except (OSError, os_adapter.NotPrivate):
+            continue
+        live.append({"pid": pid, "socket_path": socket_path, "identity": identity, "status": record.get("status")})
     if len(live) != 1:
-        raise Unavailable("The pinned Claude Code session is not running" if not live else
-                          "More than one running process claims the pinned session")
+        detail = ("The pinned Claude Code session is not running" if not live else
+                  "More than one running process claims the pinned session")
+        if unreadable and not live:
+            detail += f" ({unreadable} session record(s) could not be read)"
+        raise Unavailable(detail)
     return live[0]
 
 
 def _inbox(snapshot):
-    return {key: snapshot[key] for key in ("socket_path", "socket_dev", "socket_ino")}
+    if "identity" in snapshot:
+        return (snapshot["socket_path"], snapshot["identity"])
+    return (snapshot["socket_path"], snapshot["socket_dev"], snapshot["socket_ino"])
 
 
 def handle(request, session_record=None, sessions_dir=DEFAULT_SESSIONS):
@@ -106,9 +123,7 @@ def handle(request, session_record=None, sessions_dir=DEFAULT_SESSIONS):
                  "message": {"role": "user", "content": text},
                  "priority": "next", "session_id": session_id}
         payload = (json.dumps(frame, ensure_ascii=False) + "\n").encode("utf-8")
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(SOCKET_TIMEOUT)
-            connection.connect(snapshot["socket_path"])
+        with os_adapter.connect_local_ipc(snapshot["socket_path"], SOCKET_TIMEOUT) as connection:
             if _inbox(current()) != _inbox(snapshot):
                 raise StaleTarget("The session inbox changed while connecting")
             # A partial write can already cause a turn. No exception after this point proves non-delivery.

@@ -7,7 +7,6 @@ then unsubscribes. It never starts or changes a turn.
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 from pathlib import Path
 import socket
@@ -140,23 +139,12 @@ def with_snapshot(thread_id: str, socket_path: Path, consume) -> dict:
     if str(parsed_id) != thread_id:
         raise base.ProbeError("Thread ID must use canonical UUID form")
 
-    identity = base.validate_target(socket_path)
     deadline = time.monotonic() + base.TOTAL_TIMEOUT_SECONDS
     connection = None
     client_id = owner_id = None
     subscribed = False
     try:
-        try:
-            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            connection.settimeout(base._remaining(deadline))
-            connection.connect(str(socket_path))
-        except (TimeoutError, socket.timeout):
-            raise base.ProbeError("Desktop IPC connection timed out") from None
-        except OSError as exc:
-            raise base.ProbeError(f"Desktop IPC connection failed: {exc.strerror or type(exc).__name__}",
-                                 kind="startup" if exc.errno in (errno.ENOENT, errno.ECONNREFUSED) else "permissions" if exc.errno in (errno.EPERM, errno.EACCES) else "unavailable") from None
-        if base.validate_target(socket_path) != identity:
-            raise base.ProbeError("Desktop IPC socket changed during connection", kind="invalid_socket")
+        connection = base.open_endpoint(socket_path, deadline)
 
         initialized = base._send_request(
             connection, request_id=str(uuid4()), source_client_id=base.INITIAL_CLIENT_ID,
