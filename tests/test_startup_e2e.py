@@ -26,7 +26,7 @@ CHAT_B = {"x-codex-turn-metadata": {"thread_id": "thread-b"}}
 
 
 def run_cli(environ, *args):
-    result = subprocess.run([sys.executable, "-m", "local_ai_connector.cli", *args], env=environ,
+    result = subprocess.run([sys.executable, "-m", "local_ai_connector.cli", *args, "--json"], env=environ,
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)

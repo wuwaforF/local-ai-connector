@@ -47,13 +47,13 @@ Requirements:
 git clone https://github.com/wuwaforF/local-ai-connector.git
 cd local-ai-connector
 uv sync --frozen
-uv run local-ai-connector setup antigravity     # or: codex, claude
-uv run local-ai-connector doctor
+uv run local-ai-connector setup     # every supported app it finds; or name them: setup codex claude
 ```
 
-After `setup`:
+`setup` prints a short summary: what it added to each app, whether automatic wake-up is on, the readiness checks,
+and the next steps (`--json` prints the raw report; `doctor` repeats the checks any time). After `setup`:
 
-- Restart or reconnect MCP servers in that app, as `setup` tells you.
+- Restart or reconnect MCP servers in each app, as the summary tells you.
 - Keep the clone where it is. The app's entry points at its Python environment, so run `setup` again after moving
   it.
 - `setup` refuses to overwrite an MCP entry, data folder or port it did not create. To install alongside an

@@ -325,6 +325,13 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
         report["wake"] = ("enabled" if manifest.get("wake", {}).get(host) else
                           "off" if host in manifest.get("wake_off", []) else
                           "unavailable" if wake_desired is None else "not managed by setup")
+        if report["wake"] != "enabled":
+            # Without wake-up nothing prompts the worker chat; say so plainly.
+            report["wake_note"] = (f"Tasks for {adapter.DISPLAY_NAME} are collected only when you ask its bound chat to "
+                                   "check for connector tasks"
+                                   + {"off": f". Turn automatic wake-up on with: local-ai-connector setup {host} --wake",
+                                      "unavailable": ": automatic wake-up is not available for it here."}.get(
+                                          report["wake"], "."))
     if wake_action and not dry_run:
         # The service reads the wake-up configuration when it starts.
         endpoint = json.loads((data / f"{host}.json").read_text())
@@ -332,10 +339,49 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
             service.stop(data)
             report["service"] = service.ensure(data, endpoint["url"], endpoint["token"], runtime=ctx.runtime)
             report["service_restarted"] = "to load the wake-up configuration"
+            report["service_url"] = endpoint["url"]
     if start_service and not dry_run and "service" not in report:
         endpoint = json.loads((data / f"{host}.json").read_text())
         report["service"] = service.ensure(data, endpoint["url"], endpoint["token"], runtime=ctx.runtime)
+        report["service_url"] = endpoint["url"]
     return report
+
+
+def detect_hosts(ctx: Context | None = None) -> list[str]:
+    """The supported apps that look installed for this user."""
+    ctx = ctx or Context.current()
+    return [name for name, adapter in HOSTS.items() if adapter.detect(ctx.host_env)]
+
+
+def _wake_available(host: str, data: Path, ctx: Context) -> bool:
+    try:
+        _wake_binding(host, data, ctx)
+    except InstallError:
+        return False
+    return True
+
+
+def setup_many(hosts: list[str] | None = None, *, profile: str = "default", ctx: Context | None = None,
+               dry_run: bool = False, start_service: bool = True, wake: bool | None = None) -> dict:
+    """Set up several apps in one run (every supported app found, when none is named), then check readiness."""
+    ctx = ctx or Context.current()
+    hosts = list(dict.fromkeys(hosts or detect_hosts(ctx)))
+    if not hosts:
+        raise InstallError("no_app_found", "No supported app was found for this user. Name one: "
+                           "local-ai-connector setup codex, claude or antigravity.")
+    unknown = [host for host in hosts if host not in HOSTS]
+    if unknown:
+        raise InstallError("unknown_host", f"Unknown app '{unknown[0]}'. Choose from: {', '.join(HOSTS)}.")
+    if wake:
+        data = profile_dir(profile, ctx)
+        missing = [HOSTS[host].DISPLAY_NAME for host in hosts if not _wake_available(host, data, ctx)]
+        if missing:
+            raise InstallError("wake_unsupported", f"Automatic wake-up is not available here for {', '.join(missing)}. "
+                               "Nothing was changed; leave out --wake to set them up without it.")
+    setups = [setup(host, profile=profile, ctx=ctx, dry_run=dry_run, start_service=start_service, wake=wake)
+              for host in hosts]
+    return {"profile": profile, "dry_run": dry_run, "setups": setups,
+            "doctor": None if dry_run else doctor(profile=profile, ctx=ctx)}
 
 
 def uninstall(*, profile: str = "default", ctx: Context | None = None, hosts: list[str] | None = None,

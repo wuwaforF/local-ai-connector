@@ -58,8 +58,10 @@ def main():
                      help='启用 Codex 保存协作目标及按任务快速绑定候选；服务须另行配置元数据接口')
     mcp.add_argument("--start-service", action="store_true",
                      help="start this installation's service if it is not running")
-    install = sub.add_parser("setup", help="install or update the connector for one desktop host (idempotent)")
-    install.add_argument("host", choices=["codex", "claude", "antigravity"])
+    install = sub.add_parser("setup", help="install or update the connector for desktop apps (idempotent); "
+                             "with no app named, every supported app found")
+    install.add_argument("host", nargs="*", metavar="app", help="codex, claude or antigravity (default: all found)")
+    install.add_argument("--json", action="store_true", help="print the raw report instead of a summary")
     install.add_argument("--profile", default="default", help="separate installation name (default: default)")
     install.add_argument("--dry-run", action="store_true", help="report what would change without writing")
     install.add_argument("--no-start", action="store_true", help="do not start the service now")
@@ -73,9 +75,11 @@ def main():
     remove.add_argument("--host", action="append", choices=["codex", "claude", "antigravity"])
     remove.add_argument("--purge", action="store_true", help="also delete this installation's data directory")
     remove.add_argument("--dry-run", action="store_true")
+    remove.add_argument("--json", action="store_true", help="print the raw report instead of a summary")
     check = sub.add_parser("doctor", help="check readiness of an installation")
     check.add_argument("--profile", default="default")
     check.add_argument("--host", choices=["codex", "claude", "antigravity"])
+    check.add_argument("--json", action="store_true", help="print the raw report instead of a summary")
     unbind = sub.add_parser("unbind", help="remove the bound chat of a worker endpoint (owner)")
     unbind.add_argument("endpoint", type=peer_name)
     admin = sub.add_parser("approve",help="显示原始求助并批准或拒绝")
@@ -108,20 +112,29 @@ def main():
     data = args.data.resolve()
     if args.command in ("setup", "uninstall", "doctor"):
         from .hosts import HostConfigError
-        from .install import InstallError, doctor, setup, uninstall
+        from . import summary
+        from .install import InstallError, doctor, setup_many, uninstall
         from .service import ServiceError
         try:
             if args.command == "setup":
-                report = setup(args.host, profile=args.profile, dry_run=args.dry_run, start_service=not args.no_start,
-                               wake=args.wake)
+                report = setup_many(args.host, profile=args.profile, dry_run=args.dry_run,
+                                    start_service=not args.no_start, wake=args.wake)
+                text = summary.setup_text(report)
+                if len(args.host) == 1:
+                    report = report["setups"][0]  # one named app keeps its original report shape
             elif args.command == "uninstall":
                 report = uninstall(profile=args.profile, hosts=args.host, purge=args.purge, dry_run=args.dry_run)
+                text = summary.uninstall_text(report)
             else:
                 report = doctor(profile=args.profile, host=args.host)
+                text = summary.doctor_text(report)
         except (InstallError, HostConfigError, ServiceError) as exc:
-            print(json.dumps({"error": exc.code, "message": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+            if args.json:
+                print(json.dumps({"error": exc.code, "message": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)
+            else:
+                print(f"Error ({exc.code}): {exc}", file=sys.stderr)
             sys.exit(1)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else text)
         if args.command == "doctor" and not report["ready"]:
             sys.exit(1)
         return

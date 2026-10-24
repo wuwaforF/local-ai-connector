@@ -40,21 +40,39 @@ CLI_OVERRIDE = "LOCAL_AI_CONNECTOR_CLAUDE_CLI"
 WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "claude_code", "bridge.py")}
 
 
+def detect(env) -> bool:
+    """Setup registers through the claude CLI, so the app counts as installed when that is found."""
+    return find_cli(env) is not None
+
+
 def config_path(env) -> Path:
     base = env.environ.get("CLAUDE_CONFIG_DIR")
     return (Path(base) if base else env.home) / ".claude.json"
 
 
+def _runnable(cli: list[str]) -> bool:
+    return bool(cli) and (Path(cli[0]).is_file() or shutil.which(cli[0]) is not None)
+
+
+def _version(text: str) -> tuple:
+    return tuple(int(part) if part.isdigit() else -1 for part in text.split("."))
+
+
 def find_cli(env) -> list[str] | None:
-    """The claude CLI: an explicit override, PATH, or the copy bundled with Claude Desktop on macOS."""
+    """The claude CLI: an explicit override, PATH, or the newest copy bundled with Claude Desktop on macOS.
+
+    Claude Desktop replaces its bundled copy on update, so a command is returned only if it exists now.
+    """
     override = env.environ.get(CLI_OVERRIDE)
     if override:
-        return json.loads(override) if override.startswith("[") else [override]
+        cli = json.loads(override) if override.startswith("[") else [override]
+        return cli if _runnable(cli) else None
     found = shutil.which("claude", path=env.environ.get("PATH"))
     if found:
         return [found]
-    bundled = sorted((env.home / "Library/Application Support/Claude/claude-code").glob(
-        "*/*/claude.app/Contents/MacOS/claude"))
+    base = env.home / "Library/Application Support/Claude/claude-code"
+    bundled = sorted(base.glob("*/*/claude.app/Contents/MacOS/claude"),
+                     key=lambda path: _version(path.relative_to(base).parts[0]))
     return [str(bundled[-1])] if bundled else None
 
 
@@ -64,8 +82,11 @@ def _run(env, *args):
         raise HostConfigError("host_cli_missing", "Claude Code was not found. Open Claude Desktop once (Code tab) or "
                               f"install Claude Code, or set {CLI_OVERRIDE} to the claude executable.")
     environment = {**env.environ, "HOME": str(env.home)}
-    result = subprocess.run([*cli, *args], capture_output=True, text=True, timeout=60, env=environment,
-                            stdin=subprocess.DEVNULL)
+    try:
+        result = subprocess.run([*cli, *args], capture_output=True, text=True, timeout=60, env=environment,
+                                stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HostConfigError("host_cli_failed", f"claude {' '.join(args[:2])} could not run: {type(exc).__name__}") from None
     if result.returncode != 0:
         raise HostConfigError("host_cli_failed", f"claude {' '.join(args[:2])} failed: {result.stderr.strip()[:300]}")
 

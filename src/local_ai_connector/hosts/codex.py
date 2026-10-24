@@ -32,6 +32,11 @@ WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "codex_desktop", "b
         "state_dir": "codex-desktop-dispatches"}
 
 
+def detect(env) -> bool:
+    """Codex Desktop, the CLI and the IDE extension all keep their settings in the Codex home."""
+    return config_path(env).parent.is_dir()
+
+
 def config_path(env) -> Path:
     base = env.environ.get("CODEX_HOME")
     return (Path(base) if base else env.home / ".codex") / "config.toml"

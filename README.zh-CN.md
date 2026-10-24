@@ -45,13 +45,13 @@ Antigravity 的聊天审阅一段代码：
 git clone https://github.com/wuwaforF/local-ai-connector.git
 cd local-ai-connector
 uv sync --frozen
-uv run local-ai-connector setup antigravity     # 或：codex、claude
-uv run local-ai-connector doctor
+uv run local-ai-connector setup     # 为找到的每个受支持应用安装；也可指定：setup codex claude
 ```
 
-运行 `setup` 之后：
+`setup` 会输出简短摘要：为每个应用添加了什么、自动唤醒是否开启、就绪检查结果和下一步操作（`--json` 输出原始报告；
+随时可用 `doctor` 重新检查）。运行 `setup` 之后：
 
-- 按 `setup` 的提示，重启该应用或重新连接它的 MCP 服务器。
+- 按摘要提示，重启各应用或重新连接它们的 MCP 服务器。
 - 不要移动克隆目录：应用里的配置指向这个目录的 Python 环境，移动后需要重新运行 `setup`。
 - `setup` 不会覆盖不是它创建的 MCP 配置项、数据目录或端口。要与已有安装并存，请使用 `--profile <名称>`。
 - `uninstall` 只移除本安装添加的内容；`uninstall --purge` 还会删除它的数据。

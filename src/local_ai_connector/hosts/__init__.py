@@ -4,6 +4,7 @@ Each module provides:
   NAME, DISPLAY_NAME
   ENDPOINT            endpoint settings: approval transport and trusted chat identity (or None)
   config_path(env)    the host's MCP configuration file
+  detect(env)         whether the app looks installed for this user (used when setup names no app)
   read_entry(name, env) / write_entry(name, entry, env) / remove_entry(name, env)
   launch_entry(command, args) -> the entry this installer owns
   owned_view(entry)   the launch keys the installer owns, used to detect user edits
