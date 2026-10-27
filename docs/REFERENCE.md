@@ -11,9 +11,9 @@ are in [ARCHITECTURE.md](ARCHITECTURE.md), and platform support with its evidenc
 
 | Command | What it does |
 | --- | --- |
-| `setup <host> [--profile P] [--dry-run] [--no-start] [--wake \| --no-wake]` | Creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. For Codex and Claude on macOS it also writes the profile's `wakeup.json` binding that wakes the chat pinned at approval, and restarts a running service to load it. `--no-wake` removes that binding and keeps it off on later runs; `--wake` turns it on again. Elsewhere setup goes on without wake-up. |
-| `doctor [--host H]` | Reports what is ready. Each check says whether it was verified, not checked, or is not supported. |
-| `uninstall [--host H] [--purge]` | Removes only the host entries this installation wrote and that still match what it recorded. `--purge` also deletes the profile's data. |
+| `setup [app ...] [--profile P] [--dry-run] [--no-start] [--wake \| --no-wake] [--json]` | With no app named, sets up every supported app found for this user (Codex: its home folder; Claude: the `claude` command; Antigravity: `~/.gemini/antigravity`), then runs the `doctor` checks and prints a summary with the next steps. For each app it creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. For Codex and Claude on macOS it also writes the profile's `wakeup.json` binding that wakes the chat pinned at approval, and restarts a running service to load it. `--no-wake` removes that binding and keeps it off on later runs; `--wake` turns it on again. Elsewhere setup goes on without wake-up. |
+| `doctor [--host H] [--json]` | Reports what is ready. Each check says whether it was verified, not checked, or is not supported. |
+| `uninstall [--host H] [--purge] [--json]` | Removes only the host entries this installation wrote and that still match what it recorded. `--purge` also deletes the profile's data. |
 | `unbind <endpoint>` | Owner removal of a worker endpoint's bound chat. |
 
 ## Chat identity sources

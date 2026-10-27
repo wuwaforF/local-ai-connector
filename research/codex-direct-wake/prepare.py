@@ -27,7 +27,7 @@ def prepare(workspace: Path, profile: str = "cwtest") -> dict:
     env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_DATA_HOME")}
     env["HOME"] = str(home)
     result = subprocess.run([sys.executable, "-m", "local_ai_connector.cli", "setup", "codex", "--profile", profile,
-                             "--wake"], env=env, capture_output=True, text=True)
+                             "--wake", "--json"], env=env, capture_output=True, text=True)
     if result.returncode != 0:
         sys.exit(result.stderr)
     report = json.loads(result.stdout)

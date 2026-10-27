@@ -1,11 +1,12 @@
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from contextlib import asynccontextmanager
 import httpx
 from mcp.server.mcpserver import MCPServer, Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.request_state import RequestStateSecurity
 from mcp_types import ToolAnnotations, InputRequiredResult
+from pydantic import Field
 from .client import Client
 from .core import ConnectorError
 from .identity import caller_session, bind_session
@@ -106,9 +107,10 @@ CLAUDE_BINDING_INSTRUCTIONS = (
 CHAT_BINDING_INSTRUCTIONS = (
     " The host identifies each chat; you never supply chat IDs. When the user asks to use a chat for connector "
     "tasks, call connector_bind_this_chat from that chat. A binding grants no task permission. When delegating "
-    "to a worker whose connector_status entry has a binding, pass its label as target_chat and its revision as "
-    "binding_revision. If the binding changed, read connector_status again and confirm the target with the user. "
-    "Tasks already approved stay on the chat they were approved for."
+    "to a worker whose connector_status entry has a binding, pass its label (not a chat ID) as target_chat and "
+    "its revision as binding_revision. If the binding changed, read connector_status again and confirm the target "
+    "with the user. Tasks already approved stay on the chat they were approved for. To let the other app send "
+    "tasks back to this chat, add bind_this_chat_as to the delegation."
 )
 
 
@@ -339,7 +341,8 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
                          'returns a channel immediately: receive/send/finish on that channel; never repeat it to wait. '
                          'A native send receipt proves submission only. Native host acceptance remains pending.')
     if chat_binding is not None:
-        instructions += CHAT_BINDING_INSTRUCTIONS
+        # First, so hosts that truncate long instructions still deliver the binding rules.
+        instructions = CHAT_BINDING_INSTRUCTIONS.strip() + " " + instructions
     if binding_guide is not None:
         instructions += (
             " Before executing a binding script, read the listed MCP resource connector://claude-binding-guide "
@@ -515,8 +518,16 @@ def create_mcp(invoke, *, lifespan=None, decision=None, combined=False, mcp_loca
         async def connector_delegate(ctx: Context, target: str, message: str, request_key: str,
                                      conversation_mode: Literal["existing", "new"], timeout_seconds: int = 180,
                                      reply_to: str | None = None, reply: str | None = None,
-                                     target_chat: str | None = None, binding_revision: int | None = None,
-                                     bind_this_chat_as: str | None = None) -> dict | InputRequiredResult:
+                                     target_chat: Annotated[str | None, Field(description=(
+                                         "The bound chat of the target worker: its binding label from connector_status "
+                                         "(for example 'MEHI plan'), not a chat ID."))] = None,
+                                     binding_revision: Annotated[int | None, Field(description=(
+                                         "The binding revision from connector_status, so a re-binding in between is "
+                                         "detected."))] = None,
+                                     bind_this_chat_as: Annotated[str | None, Field(description=(
+                                         "Only when the user wants tasks sent back to THIS chat: a short label; the same "
+                                         "approval then also binds this chat to receive them."))] = None
+                                     ) -> dict | InputRequiredResult:
             """委派任务给另一个模型或工作者，如使用外部子代理。target 来自 connector_status；message 是完整任务原文。工具在当前聊天请求用户确认，批准后自动等待真实结果并结束交流。执行等待为 1–600 秒，不含用户确认时间。重试复用 request_key、target 和 message；running 时继续本工具等待。input_required 时同时提供 reply_to（questions 中的问题 id）和 reply（补充回复），继续原任务；补充回复重试也须保持原文。completed 的 answer.body 是工作者原文。"""
             from .delegation import delegate
             try:

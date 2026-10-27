@@ -23,7 +23,7 @@ def prepare(workspace: Path, profile: str = "agtest") -> dict:
     env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_DATA_HOME")}
     env.update(HOME=str(home), USERPROFILE=str(home), LOCALAPPDATA=str(home / "AppData" / "Local"))
     result = subprocess.run([sys.executable, "-m", "local_ai_connector.cli", "setup", "antigravity", "--profile", profile,
-                             "--no-start"], env=env, capture_output=True, text=True)
+                             "--no-start", "--json"], env=env, capture_output=True, text=True)
     if result.returncode != 0:
         sys.exit(result.stderr)
     report = json.loads(result.stdout)

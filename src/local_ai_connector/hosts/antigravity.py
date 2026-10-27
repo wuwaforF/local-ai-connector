@@ -29,6 +29,11 @@ LIMITATIONS = (
 )
 
 
+def detect(env) -> bool:
+    """Antigravity keeps its own folder next to Gemini CLI's settings in ~/.gemini."""
+    return (env.home / ".gemini" / "antigravity").is_dir() or config_path(env).exists()
+
+
 def config_path(env) -> Path:
     return env.home / ".gemini" / "config" / "mcp_config.json"
 

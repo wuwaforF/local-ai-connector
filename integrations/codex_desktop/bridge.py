@@ -10,21 +10,21 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
-import stat
 import subprocess
 import sys
-import tempfile
 import time
 from uuid import UUID, uuid4
 
 import probe
 import status_probe
+from local_ai_connector import os_adapter
 from local_ai_connector.wakeup import WAKE_TEXT
 
 
-DEFAULT_SOCKET = Path.home() / ".codex" / "ipc" / "ipc.sock"
-DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-ai-connector" / "codex-desktop-dispatches"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+# Desktop picks its IPC endpoint the same way: a fixed named pipe on Windows, a socket in its home elsewhere.
+DEFAULT_SOCKET = Path(r"\\.\pipe\codex-ipc") if sys.platform == "win32" else DEFAULT_CODEX_HOME / "ipc" / "ipc.sock"
+DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-ai-connector" / "codex-desktop-dispatches"
 MAX_WAKE_TEXT = 1000
 TURN_START_VERSION = 2
 # Desktop acknowledges a start-turn only after it has resumed the thread, which took about 6 s for a
@@ -98,13 +98,13 @@ def _state_directory(path: Path) -> Path:
     if not path.is_absolute():
         raise BridgeError("rejected", "The dispatch state directory must be absolute")
     try:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        info = os.lstat(path)
+        os_adapter.ensure_private_dir(path)
+        if not path.is_dir():
+            raise os_adapter.NotPrivate(f"{path} is not a directory")
+    except os_adapter.NotPrivate:
+        raise BridgeError("rejected", "The dispatch state directory must be private and user-owned") from None
     except OSError as exc:
         raise BridgeError("unavailable", f"Dispatch state unavailable: {type(exc).__name__}") from None
-    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
-        raise BridgeError("rejected", "The dispatch state directory must be private and user-owned")
     return path
 
 
@@ -127,18 +127,11 @@ def _is_wake_text(text: object, dispatch_id: str) -> bool:
 
 def _read_record(path: Path, dispatch_id: str, target: dict) -> dict | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        record = json.loads(os_adapter.read_owned_text(path, private=True))
     except FileNotFoundError:
         return None
-    except OSError as exc:
-        raise BridgeError("ambiguous", f"Dispatch record unavailable: {type(exc).__name__}") from None
-    try:
-        with os.fdopen(fd, "r", encoding="utf-8") as file:
-            info = os.fstat(file.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600):
-                raise BridgeError("ambiguous", "Dispatch record is not a private regular file")
-            record = json.load(file)
+    except os_adapter.NotPrivate:
+        raise BridgeError("ambiguous", "Dispatch record is not a private regular file") from None
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise BridgeError("ambiguous", "Dispatch record cannot be verified") from None
     if (not isinstance(record, dict) or record.get("dispatch_id") != dispatch_id
@@ -153,45 +146,24 @@ def _write_new_intent(path: Path, dispatch_id: str, target: dict) -> dict | None
     record = {"dispatch_id": dispatch_id, "target": target, "state": "intent"}
     payload = (json.dumps(record, separators=(",", ":")) + "\n").encode()
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os_adapter.create_private_file(path, payload)
+        os_adapter.fsync_dir(path.parent)
     except FileExistsError:
         return _read_record(path, dispatch_id, target)
     except OSError as exc:
-        raise BridgeError("unavailable", f"Could not create dispatch intent: {type(exc).__name__}") from None
-    try:
-        with os.fdopen(fd, "wb", closefd=False) as file:
-            file.write(payload)
-            file.flush()
-            os.fsync(fd)
-    except OSError as exc:
-        raise BridgeError("ambiguous", f"Dispatch intent write failed: {type(exc).__name__}") from None
-    finally:
-        os.close(fd)
-    directory_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+        # Once the file may exist, the outcome is unknown and must never be treated as not sent.
+        kind = "ambiguous" if path.exists() else "unavailable"
+        raise BridgeError(kind, f"Dispatch intent write failed: {type(exc).__name__}") from None
     return None
 
 
 def _write_ack(path: Path, dispatch_id: str, target: dict, turn_id: str) -> None:
     record = {"dispatch_id": dispatch_id, "target": target,
               "state": "acknowledged", "turn_id": turn_id}
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix="dispatch-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb") as file:
-            file.write((json.dumps(record, separators=(",", ":")) + "\n").encode())
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os_adapter.replace_private_file(path, (json.dumps(record, separators=(",", ":")) + "\n").encode())
+        os_adapter.fsync_dir(path.parent)
     except OSError as exc:
-        Path(temporary).unlink(missing_ok=True)
         raise BridgeError("ambiguous", f"Dispatch acknowledgment write failed: {type(exc).__name__}") from None
 
 

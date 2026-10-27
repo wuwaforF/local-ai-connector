@@ -17,6 +17,8 @@ import sys
 import time
 from uuid import UUID, uuid4
 
+from local_ai_connector import os_adapter
+
 
 MAX_FRAME_BYTES = 1024 * 1024
 TOTAL_TIMEOUT_SECONDS = 5.0
@@ -35,28 +37,62 @@ class ProbeTimeout(ProbeError):
     """A local deadline expired; callers may distinguish the request phase."""
 
 
-def validate_target(socket_path: Path) -> tuple[int, int]:
+def _os_kind(exc: OSError, missing: str) -> str:
+    return missing if exc.errno in (errno.ENOENT, errno.ECONNREFUSED) else \
+        "permissions" if exc.errno in (errno.EPERM, errno.EACCES) else "unavailable"
+
+
+def validate_target(socket_path: Path) -> tuple:
+    """A Unix-socket endpoint: its folder and the socket itself are private to this user."""
     if not socket_path.is_absolute() or "\0" in str(socket_path):
         raise ProbeError("Socket path must be absolute and contain no NUL bytes")
+    try:
+        if not stat.S_ISDIR(os.lstat(socket_path.parent).st_mode):
+            raise os_adapter.NotPrivate("not a directory")
+        os_adapter.check_private(socket_path.parent)
+    except os_adapter.NotPrivate:
+        raise ProbeError("Desktop IPC parent must be a current-user-owned private directory", kind="invalid_socket") from None
+    except OSError as exc:
+        raise ProbeError(f"Desktop IPC socket unavailable: {exc.strerror or type(exc).__name__}",
+                         kind=_os_kind(exc, "socket_missing")) from None
+    try:
+        return os_adapter.endpoint_identity(socket_path)
+    except os_adapter.NotPrivate:
+        raise ProbeError("Desktop IPC path must be a current-user-owned private socket, not a symlink", kind="invalid_socket") from None
+    except OSError as exc:
+        raise ProbeError(f"Desktop IPC socket unavailable: {exc.strerror or type(exc).__name__}",
+                         kind=_os_kind(exc, "socket_missing")) from None
 
+
+def open_endpoint(endpoint: Path, deadline: float):
+    """Connect to Desktop IPC and confirm who serves it before anything is sent.
+
+    A Unix socket is checked before and after connecting; a named pipe is identified by its
+    server process through the open connection.
+    """
+    if not os_adapter.supports("local_ipc"):
+        raise ProbeError("Codex Desktop IPC is not supported on this platform yet")
+    pipe = os_adapter.NAME == "windows"
+    identity = None if pipe else validate_target(endpoint)
     try:
-        parent = os.lstat(socket_path.parent)
+        connection = os_adapter.connect_local_ipc(endpoint, _remaining(deadline))
+    except (TimeoutError, socket.timeout):
+        raise ProbeError("Desktop IPC connection timed out") from None
     except OSError as exc:
-        raise ProbeError(f"Desktop IPC socket unavailable: {exc.strerror or type(exc).__name__}",
-                         kind="socket_missing" if exc.errno == errno.ENOENT else "permissions" if exc.errno in (errno.EPERM, errno.EACCES) else "unavailable") from None
-    uid = os.getuid()
-    if (not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
-            or parent.st_uid != uid or stat.S_IMODE(parent.st_mode) & 0o077):
-        raise ProbeError("Desktop IPC parent must be a current-user-owned private directory", kind="invalid_socket")
+        raise ProbeError(f"Desktop IPC connection failed: {exc.strerror or type(exc).__name__}",
+                         kind=_os_kind(exc, "startup")) from None
     try:
-        target = os.lstat(socket_path)
-    except OSError as exc:
-        raise ProbeError(f"Desktop IPC socket unavailable: {exc.strerror or type(exc).__name__}",
-                         kind="socket_missing" if exc.errno == errno.ENOENT else "permissions" if exc.errno in (errno.EPERM, errno.EACCES) else "unavailable") from None
-    if (stat.S_ISLNK(target.st_mode) or not stat.S_ISSOCK(target.st_mode)
-            or target.st_uid != uid or stat.S_IMODE(target.st_mode) & 0o077):
-        raise ProbeError("Desktop IPC path must be a current-user-owned private socket, not a symlink", kind="invalid_socket")
-    return target.st_dev, target.st_ino
+        if pipe:
+            os_adapter.endpoint_identity(endpoint, connection)
+        elif validate_target(endpoint) != identity:
+            raise ProbeError("Desktop IPC socket changed during connection", kind="invalid_socket")
+    except os_adapter.NotPrivate as exc:
+        connection.close()
+        raise ProbeError(f"Desktop IPC endpoint is not served by this user: {exc}", kind="invalid_socket") from None
+    except BaseException:
+        connection.close()
+        raise
+    return connection
 
 
 def _remaining(deadline: float) -> float:
@@ -185,23 +221,10 @@ def probe(thread_id: str, socket_path: Path) -> dict:
     if str(parsed_id) != thread_id:
         raise ProbeError("Thread ID must use canonical UUID form")
 
-    identity = validate_target(socket_path)
     deadline = time.monotonic() + TOTAL_TIMEOUT_SECONDS
     connection = None
     try:
-        try:
-            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        except OSError as exc:
-            raise ProbeError(f"Desktop IPC socket creation failed: {exc.strerror or type(exc).__name__}") from None
-        connection.settimeout(_remaining(deadline))
-        try:
-            connection.connect(str(socket_path))
-        except (TimeoutError, socket.timeout):
-            raise ProbeError("Desktop IPC connection timed out") from None
-        except OSError as exc:
-            raise ProbeError(f"Desktop IPC connection failed: {exc.strerror or type(exc).__name__}") from None
-        if validate_target(socket_path) != identity:
-            raise ProbeError("Desktop IPC socket changed during connection")
+        connection = open_endpoint(socket_path, deadline)
 
         client_id = _send_request(
             connection,

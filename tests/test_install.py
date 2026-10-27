@@ -350,3 +350,50 @@ def test_claude_wake_is_on_by_default_on_macos_next_to_codex(tmp_path):
     assert {peer for peer, binding in bindings.items() if binding.pinned} == {"claude", "codex"}
     setup("claude", ctx=ctx, start_service=False, wake=False)
     assert set(wake_config(ctx)["bindings"]) == {"codex"}  # turning one off keeps the other
+
+
+def test_claude_cli_must_exist_now_and_the_newest_bundled_copy_wins(tmp_path):
+    ctx = context(tmp_path)
+    missing = replace(ctx, environ={**ctx.environ, "LOCAL_AI_CONNECTOR_CLAUDE_CLI": str(tmp_path / "gone" / "claude")})
+    assert HOSTS["claude"].detect(missing.host_env) is False
+    with pytest.raises(HostConfigError) as error:
+        setup("claude", ctx=missing, start_service=False)
+    assert error.value.code == "host_cli_missing"  # a clear error, not a traceback
+
+    bundled = {k: v for k, v in ctx.environ.items() if k != "LOCAL_AI_CONNECTOR_CLAUDE_CLI"}
+    bundled["PATH"] = str(tmp_path / "empty-path")
+    base = ctx.home / "Library/Application Support/Claude/claude-code"
+    for version in ("2.1.999", "2.1.1000", "2.1.308"):
+        cli = base / version / "abc" / "claude.app/Contents/MacOS/claude"
+        cli.parent.mkdir(parents=True)
+        cli.write_text("")
+    found = HOSTS["claude"].find_cli(replace(ctx, environ=bundled).host_env)
+    assert found == [str(base / "2.1.1000" / "abc" / "claude.app/Contents/MacOS/claude")]
+
+
+def test_setup_with_no_app_named_sets_up_every_app_found(tmp_path):
+    ctx = mac(tmp_path)
+    (ctx.home / ".codex").mkdir()
+    assert installer.detect_hosts(ctx) == ["codex", "claude"]  # the fake claude CLI counts; no Antigravity folder
+    result = installer.setup_many(ctx=ctx, start_service=False)
+    assert [r["host"] for r in result["setups"]] == ["codex", "claude"]
+    assert result["doctor"]["ready"] is True
+    (ctx.home / ".gemini" / "antigravity").mkdir(parents=True)
+    with pytest.raises(InstallError) as error:
+        installer.setup_many(ctx=ctx, start_service=False, wake=True)
+    assert error.value.code == "wake_unsupported" and "Antigravity" in str(error.value)
+    assert not HOSTS["antigravity"].config_path(ctx.host_env).exists()  # refused before any write
+    with pytest.raises(InstallError) as error:
+        installer.setup_many(ctx=replace(ctx, environ={**ctx.environ, "LOCAL_AI_CONNECTOR_CLAUDE_CLI": "/nope"},
+                                         home=tmp_path / "empty-home"), start_service=False)
+    assert error.value.code == "no_app_found"
+
+
+def test_setup_summary_says_when_tasks_are_only_collected_on_request(tmp_path):
+    from local_ai_connector import summary
+    linux = replace(context(tmp_path), platform="linux")
+    result = installer.setup_many(["codex"], ctx=linux, start_service=False)
+    text = summary.setup_text(result)
+    assert "Wake-up:   not available here" in text
+    assert "collected only when you ask its bound chat to check for connector tasks" in text
+    assert "Use this chat for connector tasks." in text and "Next steps" in text

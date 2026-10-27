@@ -225,9 +225,13 @@ class Bindings:
         require(not require_target or (expected_revision is not None and expected_label is not None),
                 "target_chat_required", "Pass target_chat and binding_revision from connector_status so the "
                 "approval prompt shows the bound chat; nothing was sent.")
-        require((expected_revision is None or expected_revision == current["revision"])
-                and (expected_label is None or expected_label == current["label"]), "target_binding_changed",
+        require(expected_revision is None or expected_revision == current["revision"], "target_binding_changed",
                 "The bound chat changed. Read connector_status again; nothing was sent.")
+        # target_chat names the bound chat by its label; the short chat ID status shows is accepted too.
+        require(expected_label is None or expected_label in (current["label"], session_hint(current["session"])),
+                "target_label_mismatch",
+                f"target_chat must be the bound chat's label from connector_status, '{current['label']}' "
+                f"(revision {current['revision']}); nothing was sent.")
         self.db.execute("INSERT INTO task_targets VALUES (?,?,?,?,?,?,NULL)",
                         (channel, endpoint, current["session"], current["label"], current["revision"], self.clock()))
         return current

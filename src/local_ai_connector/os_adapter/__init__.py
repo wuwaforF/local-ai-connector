@@ -36,6 +36,12 @@ create_private_file = _impl.create_private_file
 replace_private_file = _impl.replace_private_file
 check_private = _impl.check_private
 spawn_detached = _impl.spawn_detached
+read_owned_text = _impl.read_owned_text
+fsync_dir = _impl.fsync_dir
+own_process_alive = _impl.own_process_alive
+process_start_time = _impl.process_start_time
+connect_local_ipc = _impl.connect_local_ipc
+endpoint_identity = _impl.endpoint_identity
 FEATURES = _impl.FEATURES
 
 

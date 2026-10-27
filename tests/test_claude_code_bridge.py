@@ -300,6 +300,7 @@ def test_failed_or_partial_writes_are_never_retried(inbox, monkeypatch, stage, e
             if stage == "send": raise error()
         def shutdown(self, how):
             if stage == "shutdown": raise error()
+        def close(self): pass
     monkeypatch.setattr(bridge.socket, "socket", lambda *args: FailingConnection())
     result = bridge.handle(request(inbox), inbox.record_path)
     assert result["error"] == expected and result.get("retryable", False) is False
@@ -375,6 +376,33 @@ def test_pinned_inbox_replaced_while_connecting_is_never_written(registry, monke
     def moved(target, sessions_dir):
         snapshot = original(target, sessions_dir)
         calls.append(1)
-        return snapshot if len(calls) == 1 else {**snapshot, "socket_ino": snapshot["socket_ino"] + 1}
+        return snapshot if len(calls) == 1 else {**snapshot, "identity": snapshot["identity"] + ("replaced",)}
     monkeypatch.setattr(bridge, "pinned_session", moved)
     assert bridge.handle(pinned_request(registry), sessions_dir=registry.dir)["error"] == "stale_target"
+
+
+def test_pinned_session_registry_is_read_as_utf8(registry):
+    path = registry.add()
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["cwd"] = "/Users/张伟/Ünïcode"
+    path.write_bytes(json.dumps(record, ensure_ascii=False).encode("utf-8"))
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir) == {"ok": True, "state": "idle"}
+
+
+def test_pinned_session_whose_pid_was_reused_is_skipped(registry):
+    import time
+    from local_ai_connector import os_adapter
+    path = registry.add()
+    record = json.loads(path.read_text())
+    record["procStart"] = "Mon Jan  1 00:00:00 2024"  # a different process held this PID
+    path.write_text(json.dumps(record))
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["error"] == "unavailable"
+    record["procStart"] = time.strftime("%a %b %d %H:%M:%S %Y", time.gmtime(os_adapter.process_start_time(os.getpid())))
+    path.write_text(json.dumps(record))
+    assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["state"] == "idle"
+
+
+def test_unreadable_session_records_are_reported(registry):
+    (registry.dir / "123.json").write_bytes(b"\xff\xfe not json")
+    reply = bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)
+    assert reply["error"] == "unavailable" and "1 session record(s) could not be read" in reply["detail"]

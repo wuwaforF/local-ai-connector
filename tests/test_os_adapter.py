@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -141,3 +142,93 @@ def test_detached_process_outlives_its_parent_session(tmp_path):
             break
         time.sleep(0.05)
     assert marker.read_text() == "ok"
+
+
+# --- helpers for the wake bridges -------------------------------------------------------------
+def test_owned_text_is_read_as_utf8_and_must_be_ours(tmp_path):
+    path = tmp_path / "record.json"
+    path.write_bytes('{"cwd": "C:\\\\Users\\\\张伟\\\\Ünïcode"}'.encode("utf-8"))
+    assert "张伟" in os_adapter.read_owned_text(path)  # independent of the locale code page
+    if sys.platform != "win32":
+        with pytest.raises(os_adapter.NotPrivate):
+            os_adapter.read_owned_text(path, private=True)  # 0644 is readable by others
+        path.chmod(0o600)
+        assert "Ünïcode" in os_adapter.read_owned_text(path, private=True)
+    grant_others(path, write=True)
+    with pytest.raises(os_adapter.NotPrivate):
+        os_adapter.read_owned_text(path)
+
+
+def test_process_liveness_never_signals_and_reports_start_time():
+    assert os_adapter.own_process_alive(os.getpid()) is True
+    finished = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+    assert os_adapter.own_process_alive(int(finished.stdout)) is False
+    for invalid in (0, -1, None, "123", True):
+        assert os_adapter.own_process_alive(invalid) is False
+    started = os_adapter.process_start_time(os.getpid())
+    assert started is not None and time.time() - 86400 < started <= time.time() + 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets")
+def test_local_ipc_over_a_unix_socket_and_its_identity():
+    import socket
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="ipc-", dir="/tmp") as directory:
+        path = Path(directory) / "endpoint.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(path))
+            path.chmod(0o600)
+            server.listen(1)
+            identity = os_adapter.endpoint_identity(path)
+            assert identity[0] == "socket"
+            with os_adapter.connect_local_ipc(path, 2) as client:
+                peer, _ = server.accept()
+                with peer:
+                    client.sendall(b"ping")
+                    assert peer.recv(4) == b"ping"
+            path.chmod(0o666)
+            with pytest.raises(os_adapter.NotPrivate):
+                os_adapter.endpoint_identity(path)
+        with pytest.raises(ConnectionRefusedError):
+            os_adapter.connect_local_ipc(path, 1)  # the server is gone; its socket file is not
+    with pytest.raises(FileNotFoundError):
+        os_adapter.connect_local_ipc(path, 1)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes")
+@pytest.mark.parametrize("server_ends", ["disconnect", "close"])
+def test_local_ipc_over_a_named_pipe_and_its_server_identity(server_ends):
+    import threading
+    import uuid
+    import win32file
+    import win32pipe
+    name = rf"\\.\pipe\local-ai-connector-test-{uuid.uuid4().hex}"
+    server = win32pipe.CreateNamedPipe(name, win32pipe.PIPE_ACCESS_DUPLEX,
+                                       win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
+                                       1, 65536, 65536, 0, None)
+    received = []
+
+    def serve():
+        win32pipe.ConnectNamedPipe(server, None)
+        received.append(win32file.ReadFile(server, 4)[1])
+        win32file.WriteFile(server, b"pong")
+        win32file.FlushFileBuffers(server)
+        if server_ends == "disconnect":
+            win32pipe.DisconnectNamedPipe(server)  # the client then sees ERROR_PIPE_NOT_CONNECTED (233)
+        server.Close()  # without a disconnect, the client sees ERROR_BROKEN_PIPE (109)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    with os_adapter.connect_local_ipc(name, 5) as client:
+        assert os_adapter.endpoint_identity(name, client)[:2] == ("pipe", os.getpid())
+        client.sendall(b"ping")
+        assert client.recv(4) == b"pong"
+        thread.join(5)
+        assert received == [b"ping"]
+        assert client.recv(4) == b""  # the server ended its side: end of stream, either way
+        with pytest.raises(BrokenPipeError):
+            client.sendall(b"late")
+    with pytest.raises(FileNotFoundError):
+        os_adapter.connect_local_ipc(name, 1)
+    with pytest.raises(os_adapter.NotPrivate):
+        os_adapter.endpoint_identity(name)  # a pipe is identified only through a connection

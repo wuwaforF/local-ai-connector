@@ -91,3 +91,19 @@ async def test_stdio_reads_endpoint_locale_without_connecting_to_broker(tmp_path
         assert client.instructions.isascii() == (locale == "en-US")
         assert all(tool.description.isascii() == (locale == "en-US") for tool in (await client.list_tools()).tools)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("transport", ["elicitation", "host_tool_permission"])
+async def test_binding_rules_come_first_and_delegate_describes_its_target(transport):
+    async def bind(ctx, request_id, decision):
+        raise AssertionError("Metadata tests must not bind")
+    server = create_mcp(invoke, decision=decide, combined=True, mcp_locale="en-US", approval_transport=transport,
+                        chat_binding=bind)
+    async with Client(server, mode="legacy") as client:
+        # Hosts truncate long instructions; the binding rules must survive that.
+        assert "pass its label (not a chat ID) as target_chat" in client.instructions[:700]
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        properties = tools["connector_delegate"].input_schema["properties"]
+        assert "binding label from connector_status" in properties["target_chat"]["description"]
+        assert "binding revision" in properties["binding_revision"]["description"]
+        assert "THIS chat" in properties["bind_this_chat_as"]["description"]
