@@ -34,6 +34,11 @@ FEATURES = frozenset()
 _STILL_ACTIVE = 259
 _ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND, _ERROR_ACCESS_DENIED = 2, 3, 5
 _ERROR_BROKEN_PIPE, _ERROR_PIPE_BUSY, _ERROR_MORE_DATA, _ERROR_IO_PENDING = 109, 231, 234, 997
+_ERROR_NO_DATA, _ERROR_PIPE_NOT_CONNECTED = 232, 233
+# How a client sees the server end its side: it closed its handle (109) or called DisconnectNamedPipe (233).
+_SERVER_CLOSED = frozenset({_ERROR_BROKEN_PIPE, _ERROR_PIPE_NOT_CONNECTED})
+# A write can also meet a pipe that is still being closed (232).
+_WRITE_CLOSED = _SERVER_CLOSED | {_ERROR_NO_DATA}
 
 _ALLOWED_ACE = win32security.ACCESS_ALLOWED_ACE_TYPE
 _INHERIT_ONLY = win32security.INHERIT_ONLY_ACE
@@ -289,7 +294,7 @@ class NamedPipe:
                 win32file.WriteFile(self._handle, chunk, overlapped)
                 written = self._complete(overlapped, "write")
             except pywintypes.error as exc:
-                if exc.winerror == _ERROR_BROKEN_PIPE:
+                if exc.winerror in _WRITE_CLOSED:
                     raise BrokenPipeError(errno.EPIPE, exc.strerror) from None
                 raise ConnectionError(errno.ECONNRESET, exc.strerror) from None
             view = view[written:]
@@ -301,8 +306,8 @@ class NamedPipe:
             win32file.ReadFile(self._handle, buffer, overlapped)
             count = self._complete(overlapped, "read")
         except pywintypes.error as exc:
-            if exc.winerror == _ERROR_BROKEN_PIPE:
-                return b""  # the server closed its end
+            if exc.winerror in _SERVER_CLOSED:
+                return b""  # the server ended its side: end of stream, as with a socket
             raise ConnectionError(errno.ECONNRESET, exc.strerror) from None
         return bytes(buffer[: size if count is None else count])
 

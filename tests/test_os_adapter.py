@@ -196,7 +196,8 @@ def test_local_ipc_over_a_unix_socket_and_its_identity():
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes")
-def test_local_ipc_over_a_named_pipe_and_its_server_identity():
+@pytest.mark.parametrize("server_ends", ["disconnect", "close"])
+def test_local_ipc_over_a_named_pipe_and_its_server_identity(server_ends):
     import threading
     import uuid
     import win32file
@@ -212,8 +213,9 @@ def test_local_ipc_over_a_named_pipe_and_its_server_identity():
         received.append(win32file.ReadFile(server, 4)[1])
         win32file.WriteFile(server, b"pong")
         win32file.FlushFileBuffers(server)
-        win32pipe.DisconnectNamedPipe(server)
-        server.Close()
+        if server_ends == "disconnect":
+            win32pipe.DisconnectNamedPipe(server)  # the client then sees ERROR_PIPE_NOT_CONNECTED (233)
+        server.Close()  # without a disconnect, the client sees ERROR_BROKEN_PIPE (109)
 
     thread = threading.Thread(target=serve)
     thread.start()
@@ -222,7 +224,10 @@ def test_local_ipc_over_a_named_pipe_and_its_server_identity():
         client.sendall(b"ping")
         assert client.recv(4) == b"pong"
         thread.join(5)
-        assert received == [b"ping"] and client.recv(4) == b""  # the server closed its end
+        assert received == [b"ping"]
+        assert client.recv(4) == b""  # the server ended its side: end of stream, either way
+        with pytest.raises(BrokenPipeError):
+            client.sendall(b"late")
     with pytest.raises(FileNotFoundError):
         os_adapter.connect_local_ipc(name, 1)
     with pytest.raises(os_adapter.NotPrivate):
