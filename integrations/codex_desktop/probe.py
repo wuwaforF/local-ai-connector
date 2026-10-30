@@ -37,6 +37,14 @@ class ProbeTimeout(ProbeError):
     """A local deadline expired; callers may distinguish the request phase."""
 
 
+def default_endpoint() -> Path:
+    """Where Codex Desktop listens, chosen the way Desktop chooses it: a named pipe on Windows, else a
+    socket in the Codex home (CODEX_HOME when set)."""
+    if sys.platform == "win32":
+        return Path(r"\\.\pipe\codex-ipc")
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "ipc" / "ipc.sock"
+
+
 def _os_kind(exc: OSError, missing: str) -> str:
     return missing if exc.errno in (errno.ENOENT, errno.ECONNREFUSED) else \
         "permissions" if exc.errno in (errno.EPERM, errno.EACCES) else "unavailable"
@@ -258,7 +266,7 @@ def probe(thread_id: str, socket_path: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only Codex Desktop thread-owner probe")
     parser.add_argument("--thread-id", required=True)
-    parser.add_argument("--socket", type=Path, default=Path.home() / ".codex" / "ipc" / "ipc.sock")
+    parser.add_argument("--socket", type=Path, default=default_endpoint())
     args = parser.parse_args(argv)
     try:
         result = probe(args.thread_id, args.socket)

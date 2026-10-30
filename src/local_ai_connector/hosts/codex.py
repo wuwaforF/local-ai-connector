@@ -28,8 +28,8 @@ LIMITATIONS = ("On macOS, setup turns on automatic wake-up of the bound chat (tu
                "--no-wake). It needs the chat open and idle in Codex Desktop and uses the desktop's undocumented local "
                "IPC. Elsewhere, or with wake-up off, the bound chat collects tasks when asked.",)
 # Wakes the chat pinned at approval through Codex Desktop's local thread IPC (macOS only).
-WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "codex_desktop", "bridge.py"),
-        "state_dir": "codex-desktop-dispatches"}
+WAKE = {"platforms": ("darwin",), "experimental_platforms": ("win32",),
+        "bridge": ("integrations", "codex_desktop", "bridge.py"), "state_dir": "codex-desktop-dispatches"}
 
 
 def detect(env) -> bool:

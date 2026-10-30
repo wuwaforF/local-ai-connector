@@ -151,6 +151,25 @@ def chat_identity_reader(spec):
     raise ValueError("chat_identity must be codex_meta, a request metadata path or an environment variable mapping")
 
 
+def delivery_enrollment(spec, *, platform=None, environ=None):
+    """The chat's own delivery token and inbox, from the environment its host gives this process.
+
+    Only for a host whose inbox requires the token on this platform (Claude Code on Windows); None
+    elsewhere, so nothing is read or handed over on macOS and Linux.
+    """
+    import os
+    import sys
+    from .hosts import DELIVERY_ENV
+    platform = sys.platform if platform is None else platform
+    environ = os.environ if environ is None else environ
+    if not isinstance(spec, dict) or spec.get("source") != "env":
+        return None
+    names = DELIVERY_ENV.get(spec.get("namespace"))
+    if names is None or platform not in names["platforms"] or not environ.get(names["token"]):
+        return None
+    return {"secret": environ[names["token"]], "inbox": environ.get(names["inbox"]) or None}
+
+
 def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=False, start_service=False):
     binding_catalog = binding_inspect = binding_guide = None
     if claude_binding_root is not None:
@@ -189,6 +208,22 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
         restart = lambda: ensure_for_endpoint(config_file)
     client = Client(config_file, restart=restart)
     read_chat = chat_identity_reader(client.config.get("chat_identity"))
+    delivery = delivery_enrollment(client.config.get("chat_identity"))
+    handed_over_at = [None]
+
+    async def hand_over(ctx, force=False):
+        """Give the service this chat's token; it keeps it only while this chat is the bound one."""
+        import time
+        if delivery is None or read_chat is None:
+            return
+        now = time.monotonic()
+        if not force and handed_over_at[0] is not None and now - handed_over_at[0] < 60:
+            return
+        handed_over_at[0] = now
+        try:
+            await client.call(action="enroll", secret=delivery["secret"], inbox=delivery["inbox"], session=read_chat(ctx))
+        except Exception:
+            pass  # not the bound chat, or the service is restarting: the next tool call tries again
     @asynccontextmanager
     async def lifespan(server):
         try:
@@ -198,7 +233,9 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
 
     async def invoke(ctx, **payload):
         if read_chat is not None:
-            return await client.call(**payload, session=read_chat(ctx))
+            result = await client.call(**payload, session=read_chat(ctx))
+            await hand_over(ctx)
+            return result
         meta=ctx.request_context.meta
         session=caller_session(client.config.get("client","generic"),meta or {}, client.config.get("identity"))
         if session is not None:
@@ -210,8 +247,10 @@ def serve(config_file: Path, *, claude_binding_root=None, codex_quick_binding=Fa
             "host_tool_permission" if approval_transport == "host_tool_permission" else "host_elicitation"))
 
     async def decide_binding(ctx, request_id, decision):
-        return await client.decide_binding(request_id, decision, read_chat(ctx), source=(
+        result = await client.decide_binding(request_id, decision, read_chat(ctx), source=(
             "host_tool_permission" if approval_transport == "host_tool_permission" else "host_elicitation"))
+        await hand_over(ctx, force=True)  # a newly bound chat hands over its token right away
+        return result
 
     profile = client.config.get("tool_profile", "peer")
     if profile not in ("peer", "requester", "participant"):

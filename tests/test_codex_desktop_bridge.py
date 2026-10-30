@@ -407,3 +407,21 @@ def test_start_turn_waits_longer_than_discovery_for_a_resuming_thread(monkeypatc
     request = {"op": "send", "target": TARGET, "dispatch_id": DISPATCH_ID, "text": WAKE}
     assert bridge.handle(request, state_dir=tmp_path / "state")["accepted"] is True
     assert bridge.probe.TOTAL_TIMEOUT_SECONDS < seen["wait"] <= bridge.START_TURN_TIMEOUT_SECONDS < 30
+
+
+def test_default_endpoint_follows_the_platform_and_codex_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(base_probe.sys, "platform", "win32")
+    assert str(base_probe.default_endpoint()) == r"\\.\pipe\codex-ipc"
+    monkeypatch.setattr(base_probe.sys, "platform", "darwin")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    assert base_probe.default_endpoint() == tmp_path / "codex-home" / "ipc" / "ipc.sock"
+
+
+def test_windows_never_tries_to_open_a_closed_chat(monkeypatch):
+    def cold(*_args):
+        raise base_probe.ProbeError('cold', kind='no_owner')
+    monkeypatch.setattr(bridge.status_probe, 'with_snapshot', cold)
+    monkeypatch.setattr(bridge.os_adapter, 'NAME', 'windows')
+    monkeypatch.setattr(bridge.subprocess, 'run', lambda *_a, **_k: pytest.fail('macOS navigation used on Windows'))
+    reply = bridge.handle({'op': 'restore', 'target': TARGET})
+    assert reply['error'] == 'rejected' and 'not supported on Windows' in reply['detail']

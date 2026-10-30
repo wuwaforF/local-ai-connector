@@ -22,8 +22,7 @@ from local_ai_connector.wakeup import WAKE_TEXT
 
 
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-# Desktop picks its IPC endpoint the same way: a fixed named pipe on Windows, a socket in its home elsewhere.
-DEFAULT_SOCKET = Path(r"\\.\pipe\codex-ipc") if sys.platform == "win32" else DEFAULT_CODEX_HOME / "ipc" / "ipc.sock"
+DEFAULT_SOCKET = probe.default_endpoint()
 DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "local-ai-connector" / "codex-desktop-dispatches"
 MAX_WAKE_TEXT = 1000
 TURN_START_VERSION = 2
@@ -249,6 +248,8 @@ def handle(request: dict, *, socket_path: Path = DEFAULT_SOCKET,
             except probe.ProbeError as exc:
                 if exc.kind not in ("no_owner", "socket_missing", "startup", "owner_discovery_timeout"):
                     raise
+            if os_adapter.NAME == "windows":
+                raise BridgeError("rejected", "Opening a Codex chat that is not loaded is not supported on Windows yet")
             result = subprocess.run(
                 ["/usr/bin/open", "-b", "com.openai.codex", "codex://threads/" + _thread_id(target)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -324,7 +325,11 @@ def main(argv: list[str] | None = None) -> int:
     parser_ = argparse.ArgumentParser(description=__doc__)
     parser_.add_argument("--socket-path", type=Path, default=DEFAULT_SOCKET)
     parser_.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser_.add_argument("--experimental-local-ipc", action="store_true",
+                         help="use local IPC where it is implemented but not yet accepted (setup --experimental-windows-wake)")
     args = parser_.parse_args(argv)
+    if args.experimental_local_ipc:
+        os_adapter.allow_experimental("local_ipc")
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):

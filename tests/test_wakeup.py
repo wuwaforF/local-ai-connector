@@ -1334,3 +1334,64 @@ async def test_server_wakes_the_chat_pinned_at_approval(tmp_path, bridge):
     requests = [json.loads(line) for line in (tmp_path / "bridge.log").read_text().splitlines()]
     assert [r["op"] for r in requests] == ["confirm", "status", "send"]
     assert all(r["target"] == {"session": CHAT_A} for r in requests) and "2+2?" not in json.dumps(requests)
+
+
+# --- bindings that need the bound chat's own delivery token (Claude Code on Windows) ----------
+class CredentialHost(PinnedHost):
+    async def send(self, target, dispatch_id, text, credential=None):
+        self.targets.append(("credential", credential))
+        return await super().send(target, dispatch_id, text)
+
+
+def credential_dispatcher(e, host, *, required=True):
+    return Dispatcher(e.broker, e.store, {"zcode": Binding("zcode", {}, host, pinned=True, credential_required=required)},
+                      clock=lambda: e.now[0], settle_seconds=0, busy_retry_seconds=10, ack_timeout=0.05, turn_timeout=60)
+
+
+async def test_a_binding_that_needs_the_chats_token_waits_for_it_then_passes_it_on(pinned):
+    e = pinned
+    host = CredentialHost()
+    d = credential_dispatcher(e, host)
+    await bind_chat(e.broker, CHAT_A, "Chat A")
+    await approved(e.broker)
+    await d.step()
+    assert not any(kind in ("send", "credential") for kind, _ in host.targets)
+    assert e.store.report() == []  # the task waits; nothing is marked failed
+    details = {i["code"]: i["detail"] for i in e.broker.snapshot()["incidents"]}
+    assert "check for connector tasks" in details["wake_credential_missing"]
+
+    e.broker.enroll("zcode", CHAT_A, "token-a", "/run/inbox-a")
+    e.now[0] += 10
+    await d.step()
+    assert ("credential", {"token": "token-a", "inbox": "/run/inbox-a"}) in host.targets
+    assert [t for kind, t in host.targets if kind == "send"] == [{"session": CHAT_A}]
+    assert "token-a" not in json.dumps(e.store.report())  # never stored with the dispatch
+
+
+async def test_a_binding_without_that_need_never_receives_a_token(pinned):
+    e = pinned  # PinnedHost.send takes no credential, so passing one would fail here
+    await bind_chat(e.broker, CHAT_A, "Chat A")
+    e.broker.enroll("zcode", CHAT_A, "token-a")
+    await approved(e.broker)
+    d = credential_dispatcher(e, e.host, required=False)
+    await d.step()
+    assert [t for kind, t in e.host.targets if kind == "send"] == [{"session": CHAT_A}]
+
+
+async def test_a_token_goes_only_into_the_bridges_stdin_request(bridge, tmp_path):
+    adapter = bridge("ok")
+    await adapter.confirm(TARGET)
+    await adapter.send(TARGET, "d1", "wake", credential={"token": "secret-token", "inbox": None})
+    requests = [json.loads(line) for line in (tmp_path / "bridge.log").read_text().splitlines()]
+    assert "credential" not in requests[0] and requests[1]["credential"] == {"token": "secret-token", "inbox": None}
+    assert "secret-token" not in " ".join(adapter.command)
+
+
+def test_credential_config_is_only_for_pinned_targets(tmp_path):
+    binding = {"adapter": "command", "command": ["bridge"], "target": "pinned", "credential": "required"}
+    write_config(tmp_path, {"enabled": True, "bindings": {"zcode": binding}})
+    assert load_config(tmp_path, {"zcode"})[0]["zcode"].credential_required is True
+    for bad in ({**binding, "credential": "optional"}, {**binding, "target": TARGET}):
+        write_config(tmp_path, {"enabled": True, "bindings": {"zcode": bad}})
+        with pytest.raises(WakeConfigError):
+            load_config(tmp_path, {"zcode"})

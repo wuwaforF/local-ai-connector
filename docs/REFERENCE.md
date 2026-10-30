@@ -205,6 +205,10 @@ A binding's `target` is either an owner-written object (one fixed chat) or `"pin
   - It finds the one running process for that session in Claude Code's registry (`~/.claude/sessions`), which also gives its idle or busy status.
   - It writes the wake message to that session's inbox. The inbox never acknowledges, so a send is recorded as unconfirmed until the chat collects the task.
   - Claude's own inbox settings can hold or refuse the message.
+- **Windows (experiment, `setup --experimental-windows-wake`; not yet accepted on a real desktop):**
+  - Codex uses `\\.\pipe\codex-ipc` and requires the pipe to be served by a running process of this user; opening a chat that is not loaded is refused.
+  - Claude's inbox requires the bound chat's own token (`{"type":"auth","token":...}` as the first line). That chat's connector process reads `CLAUDE_CODE_MESSAGING_TOKEN` and `CLAUDE_CODE_MESSAGING_SOCKET` and hands them to the service, which keeps them in memory only while the chat stays bound. The bridge checks that the pipe is served by the registered process of that session before sending anything. Without the token, wakes wait (`wake_credential_missing`).
+  - macOS and Linux never read or send the token.
 - On macOS, `setup codex` and `setup claude` write these bindings for you (`--no-wake` turns them off). Setup owns only that binding: it never overwrites one it did not write or that was edited, and `uninstall` or `--no-wake` removes only its own.
 
 ```json

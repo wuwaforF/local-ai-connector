@@ -125,6 +125,9 @@ host × OS implementations.
    - The token stays scoped to that session, and its local transfer and storage are protected.
    - Stale tokens are invalidated.
    - The token never appears in logs, prompts, diagnostics or the repository.
+   - Owner decision 2026-10-30: the token comes from the bound chat's own connector process (Claude
+     gives it `CLAUDE_CODE_MESSAGING_TOKEN`, observed on macOS), not from a hook; it is used on
+     Windows only. Claude then treats the body-free wake as an own-child message.
    - Authenticated own-child messaging must never stand in for user consent or override inbound
      refusal.
 5. **Isolation from the live installation.**

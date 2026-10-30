@@ -68,31 +68,43 @@ class DeliveryCredentials:
 
     def __init__(self, bindings: "Bindings", clock):
         self._bindings, self._clock = bindings, clock
-        self._entries: dict[str, tuple[str, int, float, _Secret]] = {}
+        self._entries: dict[str, tuple[str, int, float, _Secret, str | None]] = {}
         self.generation = 0
 
-    def enroll(self, endpoint: str, session: str, secret: str) -> dict:
+    def enroll(self, endpoint: str, session: str, secret: str, inbox: str | None = None) -> dict:
+        """inbox: the delivery address the chat's own environment names, for cross-checks; not secret."""
         require(isinstance(secret, str) and 0 < len(secret) <= 512, "invalid_credential",
                 "A delivery credential must be 1 to 512 characters.")
+        require(inbox is None or (isinstance(inbox, str) and 0 < len(inbox) <= 1000 and "\0" not in inbox),
+                "invalid_credential", "A delivery address must be 1 to 1000 characters.")
         current = self._bindings.current(endpoint)
         require(current is not None and current["session"] == session, "not_enrolled_target",
                 "Only the explicitly bound chat can enroll a delivery credential.")
         self.generation += 1
-        self._entries[endpoint] = (session, current["revision"], self._clock() + CREDENTIAL_TTL, _Secret(secret))
+        self._entries[endpoint] = (session, current["revision"], self._clock() + CREDENTIAL_TTL, _Secret(secret), inbox)
         return {"state": "enrolled", "endpoint": endpoint, "revision": current["revision"],
                 "generation": self.generation}
 
-    def get(self, endpoint: str, session: str, revision: int) -> str | None:
+    def _entry(self, endpoint: str, session: str, revision: int):
         entry = self._entries.get(endpoint)
         if entry is None:
             return None
-        enrolled_session, enrolled_revision, expires, secret = entry
+        enrolled_session, enrolled_revision, expires = entry[:3]
         current = self._bindings.current(endpoint)
         if (current is None or (current["session"], current["revision"]) != (enrolled_session, enrolled_revision)
                 or (session, revision) != (enrolled_session, enrolled_revision) or self._clock() >= expires):
             del self._entries[endpoint]
             return None
-        return secret.reveal()
+        return entry
+
+    def get(self, endpoint: str, session: str, revision: int) -> str | None:
+        entry = self._entry(endpoint, session, revision)
+        return None if entry is None else entry[3].reveal()
+
+    def delivery(self, endpoint: str, session: str, revision: int) -> dict | None:
+        """The token and the address the bound chat reported, for the wake bridge only; never logged."""
+        entry = self._entry(endpoint, session, revision)
+        return None if entry is None else {"token": entry[3].reveal(), "inbox": entry[4]}
 
     def invalidate(self, endpoint: str):
         self._entries.pop(endpoint, None)

@@ -107,3 +107,13 @@ async def test_binding_rules_come_first_and_delegate_describes_its_target(transp
         assert "binding label from connector_status" in properties["target_chat"]["description"]
         assert "binding revision" in properties["binding_revision"]["description"]
         assert "THIS chat" in properties["bind_this_chat_as"]["description"]
+
+
+def test_only_a_windows_claude_chat_hands_over_its_token():
+    from local_ai_connector.mcp_server import delivery_enrollment
+    claude = {"source": "env", "variable": "CLAUDE_CODE_SESSION_ID", "namespace": "claude"}
+    env = {"CLAUDE_CODE_MESSAGING_TOKEN": "tok", "CLAUDE_CODE_MESSAGING_SOCKET": r"\\.\pipe\LOCAL\cc-msg-1"}
+    assert delivery_enrollment(claude, platform="win32", environ=env) == {"secret": "tok", "inbox": r"\\.\pipe\LOCAL\cc-msg-1"}
+    assert delivery_enrollment(claude, platform="darwin", environ=env) is None  # macOS: nothing read or handed over
+    assert delivery_enrollment(claude, platform="win32", environ={}) is None
+    assert delivery_enrollment({"source": "codex_meta"}, platform="win32", environ=env) is None

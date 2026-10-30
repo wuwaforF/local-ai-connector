@@ -61,3 +61,5 @@ def replace_text(path: Path, text: str):
 from . import antigravity, claude, codex  # noqa: E402
 
 HOSTS = {module.NAME: module for module in (codex, claude, antigravity)}
+# Delivery-credential variables by chat-identity namespace (see hosts/claude.py).
+DELIVERY_ENV = {"claude": claude.DELIVERY_ENV}

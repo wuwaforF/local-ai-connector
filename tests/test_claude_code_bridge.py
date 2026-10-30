@@ -406,3 +406,86 @@ def test_unreadable_session_records_are_reported(registry):
     (registry.dir / "123.json").write_bytes(b"\xff\xfe not json")
     reply = bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)
     assert reply["error"] == "unavailable" and "1 session record(s) could not be read" in reply["detail"]
+
+
+# --- the Windows path, with a fake named pipe at the OS-adapter boundary ----------------------
+TOKEN = "per-session-token"
+
+
+class FakePipe:
+    def __init__(self):
+        self.written = b""
+
+    def __enter__(self): return self
+    def __exit__(self, *exc): pass
+    def sendall(self, data): self.written += data
+    def shutdown(self, how): pass
+
+
+@pytest.fixture
+def windows(registry, monkeypatch):
+    from local_ai_connector import os_adapter
+    state = SimpleNamespace(connections=[], served_by=os.getpid())
+
+    def connect(path, timeout):
+        pipe = FakePipe()
+        state.connections.append((path, pipe))
+        return pipe
+    monkeypatch.setattr(os_adapter, "NAME", "windows")
+    monkeypatch.setattr(os_adapter, "connect_local_ipc", connect)
+    monkeypatch.setattr(os_adapter, "endpoint_identity", lambda path, connection=None: (
+        "pipe", state.served_by, os_adapter.process_start_time(os.getpid())))
+    registry.add()
+    state.registry = registry
+    return state
+
+
+def windows_send(state, credential=None):
+    request = pinned_request(state.registry)
+    if credential is not None:
+        request["credential"] = credential
+    return bridge.handle(request, sessions_dir=state.registry.dir)
+
+
+def test_windows_status_comes_from_the_registry_without_connecting(windows):
+    assert bridge.handle(pinned_request(windows.registry, "status"), sessions_dir=windows.registry.dir) == \
+        {"ok": True, "state": "idle"}
+    assert windows.connections == []
+
+
+def test_windows_send_needs_the_chats_token_before_connecting(windows):
+    reply = windows_send(windows)
+    assert reply["error"] == "unavailable" and "token" in reply["detail"] and windows.connections == []
+
+
+def test_windows_send_authenticates_first_then_delivers_one_frame(windows):
+    reply = windows_send(windows, {"token": TOKEN, "inbox": str(windows.registry.inbox.path)})
+    assert reply["error"] == "ambiguous" and TOKEN not in json.dumps(reply)
+    [(path, pipe)] = windows.connections
+    auth, frame, rest = pipe.written.split(b"\n")
+    assert json.loads(auth) == {"type": "auth", "token": TOKEN} and rest == b""
+    assert json.loads(frame)["session_id"] == SESSION and json.loads(frame)["msg_id"] == DISPATCH
+
+
+def test_windows_send_refuses_another_server_or_a_different_inbox(windows):
+    windows.served_by = os.getppid()
+    assert windows_send(windows, {"token": TOKEN, "inbox": None})["error"] == "stale_target"
+    assert windows.connections[-1][1].written == b""  # nothing was written to the wrong server
+    windows.served_by = os.getpid()
+    reply = windows_send(windows, {"token": TOKEN, "inbox": r"\\.\pipe\LOCAL\cc-msg-other"})
+    assert reply["error"] == "stale_target" and len(windows.connections) == 1  # refused before connecting
+
+
+def test_windows_refuses_captured_session_targets_clearly(windows, inbox):
+    reply = bridge.handle(request(inbox), inbox.record_path)
+    assert reply == {"ok": False, "error": "rejected",
+                     "detail": "Captured-session targets work on macOS and Linux only; bind the chat instead"}
+
+
+def test_macos_and_linux_never_send_the_token(registry):
+    registry.add()
+    request = {**pinned_request(registry), "credential": {"token": TOKEN, "inbox": None}}
+    reply = bridge.handle(request, sessions_dir=registry.dir)
+    assert reply["error"] == "ambiguous"
+    frame = read_frame(registry.inbox)  # exactly one line: the wake frame, no auth line
+    assert frame["type"] == "user" and TOKEN not in json.dumps(frame)

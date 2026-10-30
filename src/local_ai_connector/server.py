@@ -50,6 +50,7 @@ class Operation(BaseModel):
     expected_label: str | None = Field(default=None, max_length=80)
     require_target: bool = False
     secret: str | None = Field(default=None, max_length=512)
+    inbox: str | None = Field(default=None, max_length=1000)
 
 
 class MCPAuthMiddleware:
@@ -229,7 +230,7 @@ def create_app(data: Path):
         elif op.action == "unbind":
             return await broker.unbind(peer, op.session)
         elif op.action == "enroll":
-            return broker.enroll(peer, op.session, op.secret)
+            return broker.enroll(peer, op.session, op.secret, op.inbox)
         elif op.action == "finish":
             return await broker.finish(peer,op.channel)
         elif op.action == "result":

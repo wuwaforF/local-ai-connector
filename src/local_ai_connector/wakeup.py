@@ -80,8 +80,11 @@ class WakeAdapter:
         """Prepare an exact cold target; callable only with owner-enabled, pending authority."""
         raise AdapterError("rejected", "adapter does not support restoration")
 
-    async def send(self, target: dict, dispatch_id: str, text: str) -> dict:
-        """Deliver the wake text once, using dispatch_id as the host idempotency key if any."""
+    async def send(self, target: dict, dispatch_id: str, text: str, credential: dict | None = None) -> dict:
+        """Deliver the wake text once, using dispatch_id as the host idempotency key if any.
+
+        credential is passed only to bindings that require one: the bound chat's own delivery token.
+        """
         raise NotImplementedError
 
     async def reconcile(self, target: dict, dispatch_id: str) -> str:
@@ -149,8 +152,10 @@ class CommandAdapter(WakeAdapter):
         if not isinstance(reply.get("restored"), bool):
             raise AdapterError("malformed", "restore reply has no restoration result")
 
-    async def send(self, target, dispatch_id, text):
-        reply = await self._call("send", target=target, dispatch_id=dispatch_id, text=text)
+    async def send(self, target, dispatch_id, text, credential=None):
+        # A credential travels only in the stdin request: never in argv, the environment or a log.
+        fields = {"credential": credential} if credential is not None else {}
+        reply = await self._call("send", target=target, dispatch_id=dispatch_id, text=text, **fields)
         if reply.get("accepted") is not True:
             raise AdapterError("ambiguous", "send reply did not state accepted=true")
         return {"host_ref": str(reply.get("host_ref", ""))[:200]}
@@ -169,6 +174,8 @@ class Binding:
     restore_enabled: bool = False
     # Wake the chat each task was pinned to at approval ({"session": ...}) instead of `target`.
     pinned: bool = False
+    # The host accepts a wake only with the bound chat's own delivery token (Claude Code on Windows).
+    credential_required: bool = False
 
 
 class WakeStore:
@@ -388,6 +395,15 @@ class Dispatcher:
                 return None
             sessions.add(pinned["session"])
         return {"session": sessions.pop()} if len(sessions) == 1 else None
+
+    def _credential(self, binding, target):
+        """The bound chat's own delivery token, when this binding needs one and that chat is still bound."""
+        if not binding.credential_required or "session" not in target:
+            return None
+        current = self.broker.bindings.current(binding.peer)
+        if current is None or current["session"] != target["session"]:
+            return None
+        return self.broker.bindings.credentials.delivery(binding.peer, current["session"], current["revision"])
 
     def _one_target(self, binding, rows, target=None):
         """Ready rows that wake the same chat, by default the one pinned for the earliest row."""
@@ -756,6 +772,13 @@ class Dispatcher:
             self.incident(peer, "wake_deferred_" + state, "target not idle; wake-up deferred")
             self.not_before[peer] = self.clock() + self.busy_retry
             return "defer"
+        if binding.credential_required and self._credential(binding, target) is None:
+            # Nothing is sent and the task keeps waiting; it is not a failed delivery.
+            self.incident(peer, "wake_credential_missing",
+                          "the bound chat has not handed over its delivery token yet; it does when it next calls a "
+                          "connector tool, for example when asked to check for connector tasks")
+            self.not_before[peer] = self.clock() + self.busy_retry
+            return "defer"
         with self.store.db:
             self.store.db.execute("UPDATE recoveries SET state='ready' WHERE peer=? AND target=?",
                                   (peer, json.dumps(target, sort_keys=True)))
@@ -772,10 +795,16 @@ class Dispatcher:
             self._stale_binding(binding, did)
             return
         target = json.loads(row[0])
+        credential = self._credential(binding, target)
+        if binding.credential_required and credential is None:
+            self.store.move(did, "retry_pending", self.clock(), "no delivery credential yet; nothing sent")
+            return
         if not self.store.begin_attempt(did, self.clock()):
             return
         try:
-            ack = await asyncio.wait_for(binding.adapter.send(target, did, text), self.ack_timeout)
+            sending = (binding.adapter.send(target, did, text) if credential is None
+                       else binding.adapter.send(target, did, text, credential=credential))
+            ack = await asyncio.wait_for(sending, self.ack_timeout)
         except asyncio.CancelledError:
             raise  # the row is 'intent' for every attempt; recovery must reconcile, never resend blindly
         except (AdapterError, TimeoutError, asyncio.TimeoutError) as exc:
@@ -864,7 +893,7 @@ def parse_config(config, peers) -> tuple[dict[str, Binding], dict | None]:
             if not isinstance(command, list) or not command or not all(isinstance(c, str) and c for c in command):
                 raise WakeConfigError("command adapter needs a non-empty argv list")
             adapter = CommandAdapter(command, float(timeout))
-            fields = {"adapter", "command", "target", "timeout", "restore"}
+            fields = {"adapter", "command", "target", "timeout", "restore", "credential"}
         elif kind == "socket":
             from . import os_adapter
             if not os_adapter.supports("unix_socket_bridge"):
@@ -883,7 +912,11 @@ def parse_config(config, peers) -> tuple[dict[str, Binding], dict | None]:
         restore = spec.get("restore", False)
         if not isinstance(restore, bool):
             raise WakeConfigError("binding restore must be boolean")
-        bindings[peer] = Binding(peer, {} if pinned else target, adapter, restore_enabled=restore, pinned=pinned)
+        credential = spec.get("credential")
+        if credential not in (None, "required") or (credential and not pinned):
+            raise WakeConfigError('binding credential must be "required", on a pinned target')
+        bindings[peer] = Binding(peer, {} if pinned else target, adapter, restore_enabled=restore, pinned=pinned,
+                                 credential_required=credential == "required")
     # options is None unless the owner set "enabled": true explicitly.
     return bindings, (options if config.get("enabled") is True else None)
 

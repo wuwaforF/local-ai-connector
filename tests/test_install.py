@@ -397,3 +397,19 @@ def test_setup_summary_says_when_tasks_are_only_collected_on_request(tmp_path):
     assert "Wake-up:   not available here" in text
     assert "collected only when you ask its bound chat to check for connector tasks" in text
     assert "Use this chat for connector tasks." in text and "Next steps" in text
+
+
+def test_windows_wake_only_as_an_explicit_experiment(tmp_path):
+    win = replace(context(tmp_path), platform="win32")
+    assert setup("codex", ctx=win, start_service=False)["wake"] == "unavailable"
+    with pytest.raises(InstallError) as error:
+        setup("codex", ctx=win, start_service=False, wake=True)
+    assert error.value.code == "wake_unsupported_platform" and "--experimental-windows-wake" in str(error.value)
+
+    assert setup("codex", ctx=win, start_service=False, experimental=True)["wake"] == "enabled"
+    setup("claude", ctx=win, start_service=False, experimental=True)
+    bindings = wake_config(win)["bindings"]
+    assert bindings["codex"]["command"][-1] == "--experimental-local-ipc" and "credential" not in bindings["codex"]
+    assert bindings["claude"]["command"][-1] == "--experimental-local-ipc" and bindings["claude"]["credential"] == "required"
+    loaded, _ = load_config(profile_dir("default", win), set(HOSTS))
+    assert loaded["claude"].credential_required and not loaded["codex"].credential_required

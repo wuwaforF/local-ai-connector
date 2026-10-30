@@ -209,7 +209,7 @@ def probe(thread_id: str, socket_path: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only Codex Desktop thread snapshot probe")
     parser.add_argument("--thread-id", required=True)
-    parser.add_argument("--socket-path", type=Path, default=Path.home() / ".codex" / "ipc" / "ipc.sock")
+    parser.add_argument("--socket-path", type=Path, default=base.default_endpoint())
     args = parser.parse_args(argv)
     try:
         result = probe(args.thread_id, args.socket_path)

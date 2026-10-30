@@ -70,6 +70,8 @@ def main():
                         help="wake the bound chat when a task is approved (Codex on macOS: the default)")
     waking.add_argument("--no-wake", dest="wake", action="store_const", const=False,
                         help="turn automatic wake-up off and keep it off on later runs")
+    install.add_argument("--experimental-windows-wake", action="store_true",
+                         help="Windows only: turn on wake-up that is not yet accepted on a real desktop, for testing")
     remove = sub.add_parser("uninstall", help="remove host entries this installation created")
     remove.add_argument("--profile", default="default")
     remove.add_argument("--host", action="append", choices=["codex", "claude", "antigravity"])
@@ -118,7 +120,8 @@ def main():
         try:
             if args.command == "setup":
                 report = setup_many(args.host, profile=args.profile, dry_run=args.dry_run,
-                                    start_service=not args.no_start, wake=args.wake)
+                                    start_service=not args.no_start, wake=args.wake,
+                                    experimental=args.experimental_windows_wake)
                 text = summary.setup_text(report)
                 if len(args.host) == 1:
                     report = report["setups"][0]  # one named app keeps its original report shape

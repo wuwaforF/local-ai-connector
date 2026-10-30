@@ -552,8 +552,8 @@ class Broker:
         await self.notify()
         return result
 
-    def enroll(self, peer, session, secret):
-        return self.bindings.credentials.enroll(peer, session, secret)
+    def enroll(self, peer, session, secret, inbox=None):
+        return self.bindings.credentials.enroll(peer, session, secret, inbox)
 
     def record_incident(self,peer,code,detail):
         with self.db:

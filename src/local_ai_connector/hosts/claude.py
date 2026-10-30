@@ -37,7 +37,12 @@ LIMITATIONS = ("On macOS, setup turns on automatic wake-up of the bound Claude C
 CLI_OVERRIDE = "LOCAL_AI_CONNECTOR_CLAUDE_CLI"
 
 # Wakes the chat pinned at approval through its Claude Code session inbox, found in Claude Code's registry.
-WAKE = {"platforms": ("darwin",), "bridge": ("integrations", "claude_code", "bridge.py")}
+# Claude Code gives each chat's processes its inbox and token in these documented variables; the token
+# is handed over only where the inbox requires it.
+DELIVERY_ENV = {"token": "CLAUDE_CODE_MESSAGING_TOKEN", "inbox": "CLAUDE_CODE_MESSAGING_SOCKET", "platforms": ("win32",)}
+# On Windows the inbox accepts a connection only after the chat's own token (credential_platforms).
+WAKE = {"platforms": ("darwin",), "experimental_platforms": ("win32",), "credential_platforms": ("win32",),
+        "bridge": ("integrations", "claude_code", "bridge.py")}
 
 
 def detect(env) -> bool:

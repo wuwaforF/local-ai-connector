@@ -275,3 +275,19 @@ async def test_target_chat_also_accepts_the_short_chat_id_that_status_shows(env)
     await bind(b, "codex", CHAT_A, "Reviewer")
     opened = await task(b, key="by-hint", require_target=True, expected_revision=1, expected_label=session_hint(CHAT_A))
     assert opened["target_chat"]["label"] == "Reviewer"
+
+
+async def test_delivery_returns_token_and_reported_inbox_only_for_the_bound_chat(env):
+    b = env.broker
+    b.bindings.bindable.add("claude")
+    await bind(b, "claude", CLAUDE_CHAT, "Coordinator")
+    b.enroll("claude", CLAUDE_CHAT, "token-1", r"\\.\pipe\LOCAL\cc-msg-1")
+    assert b.bindings.credentials.delivery("claude", CLAUDE_CHAT, 1) == {
+        "token": "token-1", "inbox": r"\\.\pipe\LOCAL\cc-msg-1"}
+    assert b.bindings.credentials.delivery("claude", "claude:other-session", 1) is None
+    assert "token-1" not in repr(b.bindings.credentials)
+    with pytest.raises(ConnectorError) as error:
+        b.enroll("claude", CLAUDE_CHAT, "token-2", "x" * 1001)
+    assert error.value.code == "invalid_credential"
+    await bind(b, "claude", CLAUDE_CHAT, "Coordinator", key="rebind")  # a re-binding makes it stale
+    assert b.bindings.credentials.delivery("claude", CLAUDE_CHAT, 2) is None

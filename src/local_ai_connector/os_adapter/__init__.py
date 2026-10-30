@@ -45,12 +45,24 @@ endpoint_identity = _impl.endpoint_identity
 FEATURES = _impl.FEATURES
 
 
+# Capabilities a process turned on explicitly for an acceptance experiment (see allow_experimental).
+_EXPERIMENTAL: set[str] = set()
+
+
+def allow_experimental(feature: str):
+    """Turn on a capability that is implemented but not yet accepted on this platform, for this process.
+
+    Used only by a wake bridge whose configuration asks for it (setup --experimental-windows-wake).
+    """
+    _EXPERIMENTAL.add(feature)
+
+
 def supports(feature: str) -> bool:
-    return feature in FEATURES
+    return feature in FEATURES or feature in _EXPERIMENTAL
 
 
 def require(feature: str):
-    if feature not in FEATURES:
+    if not supports(feature):
         raise Unsupported(feature)
 
 
