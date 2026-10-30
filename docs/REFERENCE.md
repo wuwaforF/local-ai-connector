@@ -11,7 +11,7 @@ are in [ARCHITECTURE.md](ARCHITECTURE.md), and platform support with its evidenc
 
 | Command | What it does |
 | --- | --- |
-| `setup [app ...] [--profile P] [--dry-run] [--no-start] [--wake \| --no-wake] [--json]` | With no app named, sets up every supported app found for this user (Codex: its home folder; Claude: the `claude` command; Antigravity: `~/.gemini/antigravity`), then runs the `doctor` checks and prints a summary with the next steps. For each app it creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. For Codex and Claude on macOS it also writes the profile's `wakeup.json` binding that wakes the chat pinned at approval, and restarts a running service to load it. `--no-wake` removes that binding and keeps it off on later runs; `--wake` turns it on again. Elsewhere setup goes on without wake-up. |
+| `setup [app ...] [--profile P] [--dry-run] [--no-start] [--wake \| --no-wake] [--json]` | With no app named, sets up every supported app found for this user (Codex: its home folder; Claude: the `claude` command; Antigravity: `~/.gemini/antigravity`), then runs the `doctor` checks and prints a summary with the next steps. For each app it creates or reuses an installation profile in the platform data directory and adds this installation's MCP entry to the host. Idempotent. It refuses entries, data directories and ports it did not create, and it never grants tool or file permissions. For Codex and Claude on macOS and Windows it also writes the profile's `wakeup.json` binding that wakes the chat pinned at approval, and restarts a running service to load it. `--no-wake` removes that binding and keeps it off on later runs; `--wake` turns it on again. Elsewhere setup goes on without wake-up. |
 | `doctor [--host H] [--json]` | Reports what is ready. Each check says whether it was verified, not checked, or is not supported. |
 | `uninstall [--host H] [--purge] [--json]` | Removes only the host entries this installation wrote and that still match what it recorded. `--purge` also deletes the profile's data. |
 | `unbind <endpoint>` | Owner removal of a worker endpoint's bound chat. |
@@ -198,6 +198,7 @@ A binding's `target` is either an owner-written object (one fixed chat) or `"pin
 
 - The endpoint needs a trusted chat identity (`chat_identity`), otherwise wake-up is disabled with `wakeup_config_error`.
 - Re-binding never moves an approved task: a pending retry still wakes the chat pinned for it.
+- The worker's answer, or its question back, wakes the chat that started the task, when the host identified that chat. Only that chat can read the task's results; another chat of the same app gets `wrong_session`. Reading the result while waiting in `connector_delegate` counts as receiving it, so no wake follows.
 - A task with no pinned chat is not woken (`wake_target_unpinned`).
 - One wake runs at a time per endpoint, even when its tasks are pinned to different chats.
 - The Codex Desktop bridge accepts `{"session": "codex:<thread id>"}`. It checks the thread ID alone, and refuses an archived thread (`wake_host_archived`).
@@ -205,11 +206,11 @@ A binding's `target` is either an owner-written object (one fixed chat) or `"pin
   - It finds the one running process for that session in Claude Code's registry (`~/.claude/sessions`), which also gives its idle or busy status.
   - It writes the wake message to that session's inbox. The inbox never acknowledges, so a send is recorded as unconfirmed until the chat collects the task.
   - Claude's own inbox settings can hold or refuse the message.
-- **Windows (experiment, `setup --experimental-windows-wake`; not yet accepted on a real desktop):**
+- **Windows:**
   - Codex uses `\\.\pipe\codex-ipc` and requires the pipe to be served by a running process of this user; opening a chat that is not loaded is refused.
-  - Claude's inbox requires the bound chat's own token (`{"type":"auth","token":...}` as the first line). That chat's connector process reads `CLAUDE_CODE_MESSAGING_TOKEN` and `CLAUDE_CODE_MESSAGING_SOCKET` and hands them to the service, which keeps them in memory only while the chat stays bound. The bridge checks that the pipe is served by the registered process of that session before sending anything. Without the token, wakes wait (`wake_credential_missing`).
+  - Claude's inbox requires the bound chat's own token (`{"type":"auth","token":...}` as the first line). That chat's connector process reads `CLAUDE_CODE_MESSAGING_TOKEN` and `CLAUDE_CODE_MESSAGING_SOCKET` and hands them to the service on its first tool call, and again right after it is bound. The service keeps them in memory only, for the bound chat only, and drops them on re-binding, on restart or after 12 hours. The bridge checks that the pipe is served by the registered process of that session (PID and start time) before sending anything. Without the token, wakes wait (`wake_credential_missing`); a task for a chat that is not the bound one is collected when asked (`wake_target_not_bound`).
   - macOS and Linux never read or send the token.
-- On macOS, `setup codex` and `setup claude` write these bindings for you (`--no-wake` turns them off). Setup owns only that binding: it never overwrites one it did not write or that was edited, and `uninstall` or `--no-wake` removes only its own.
+- On macOS and Windows, `setup codex` and `setup claude` write these bindings for you (`--no-wake` turns them off). Setup owns only that binding: it never overwrites one it did not write or that was edited, and `uninstall` or `--no-wake` removes only its own.
 
 ```json
 {"enabled": true, "bindings": {"codex": {"adapter": "command", "target": "pinned",

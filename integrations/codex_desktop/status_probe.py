@@ -21,6 +21,8 @@ SNAPSHOT_METHOD = "thread-stream-state-changed"
 FOLLOWING_METHOD = "thread-stream-following-changed"
 FOLLOWING_VERSION = 1
 SNAPSHOT_VERSION = 11
+# A thread snapshot carries the whole conversation; a long chat exceeds the 1 MiB request limit.
+MAX_SNAPSHOT_FRAME_BYTES = 8 * 1024 * 1024
 RUNTIME_STATUSES = {"active", "idle", "systemError"}
 TURN_STATUSES = {"inProgress", "completed", "failed", "interrupted"}
 
@@ -40,7 +42,7 @@ def _write(connection, message: dict, deadline: float) -> None:
 
 def _read_message(connection, deadline: float) -> dict:
     length = int.from_bytes(base._read_exact(connection, 4, deadline), "little")
-    if length <= 0 or length > base.MAX_FRAME_BYTES:
+    if length <= 0 or length > MAX_SNAPSHOT_FRAME_BYTES:
         raise base.ProbeError("Desktop IPC returned an invalid or oversized frame")
     try:
         message = json.loads(base._read_exact(connection, length, deadline))

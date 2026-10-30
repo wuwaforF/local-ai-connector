@@ -4,8 +4,8 @@ Not provided here (reported as unsupported): Unix-socket bridges and the race-re
 workspace write in files.py, whose POSIX guarantees rely on O_NOFOLLOW and dir_fd. A check
 for reparse points followed by a replace is not equivalent, so it is not offered.
 
-The named-pipe client (connect_local_ipc, endpoint_identity) is implemented and tested, but
-"local_ipc" is not advertised until the wake bridges pass acceptance on a Windows desktop.
+Local IPC is a named-pipe client (connect_local_ipc) whose server is identified through the open
+connection (endpoint_identity); both wake bridges use it.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import win32process
 import win32security
 
 NAME = "windows"
-FEATURES = frozenset()
+FEATURES = frozenset({"local_ipc"})
 _STILL_ACTIVE = 259
 _ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND, _ERROR_ACCESS_DENIED = 2, 3, 5
 _ERROR_BROKEN_PIPE, _ERROR_PIPE_BUSY, _ERROR_MORE_DATA, _ERROR_IO_PENDING = 109, 231, 234, 997

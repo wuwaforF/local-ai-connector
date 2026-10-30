@@ -156,7 +156,8 @@ class Broker:
                 'scope': {'requester': peer, 'responder': target}, 'task_authorized': False,
                 'detail': 'Routing metadata only. Submit each new task with quick_bind and a new initiating-host approval.'}
 
-    async def open(self, peer, target, body, key, ttl_seconds=3600, idle_seconds=120, conversation_mode="existing", *, _archive=None, selected_conversation=None, binding_only=False, expected_revision=None, expected_label=None, require_target=False):
+    async def open(self, peer, target, body, key, ttl_seconds=3600, idle_seconds=120, conversation_mode="existing", *, _archive=None, selected_conversation=None, binding_only=False, expected_revision=None, expected_label=None, require_target=False, session=None):
+        """session: the chat that starts the task, when the host identifies it; only that chat sees the result."""
         self.expire()
         require(isinstance(body, str) and 0 < len(body.strip()) <= 16000, "invalid_body", "求助内容须为 1 至 16000 字符")
         require(isinstance(key, str) and 0 < len(key) <= 200, "invalid_key", "每次新操作需要稳定且唯一的去重编号")
@@ -169,6 +170,7 @@ class Broker:
                     'Saving a target uses the fixed metadata-only approval scope and an exact selected row.')
         old = self.db.execute("SELECT * FROM channels WHERE requester=? AND open_key=?", (peer, key)).fetchone()
         if old:
+            self.bindings.require_session(dict(old), peer, session)
             binding = self.conversations.binding_request(old['id'])
             require((binding is not None) == binding_only, 'idempotency_conflict', 'A request key cannot change approval scope.')
             require((binding['selection'] if binding else self.conversations.existing_route(old['id'])) == selected_conversation,
@@ -194,11 +196,14 @@ class Broker:
             # Metadata I/O yields; another retry may have created this same request meanwhile.
             if self.db.execute('SELECT 1 FROM channels WHERE requester=? AND open_key=?', (peer, key)).fetchone():
                 return await self.open(peer, target, body, key, ttl_seconds, idle_seconds, conversation_mode,
-                                       _archive=_archive, selected_conversation=selected_conversation, binding_only=binding_only)
+                                       _archive=_archive, selected_conversation=selected_conversation, binding_only=binding_only,
+                                       session=session)
             self.expire()
         cid, now = str(uuid4()), self.clock()
         with self.db:
             self.db.execute("INSERT INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?)", (cid, peer, target, body, "pending", now, now+ttl_seconds, idle_seconds, None, key, None))
+            if session is not None:
+                self.bindings.record_origin(cid, peer, session)
             self.conversations.open(cid, target, conversation_mode, selected_conversation, binding_only=binding_only)
             if not binding_only and not _archive:
                 # The chat shown for approval; pinned only if it is unchanged when approved.
@@ -350,7 +355,7 @@ class Broker:
         await self.notify()
         return msg
 
-    async def continue_channel(self, peer, cid, body, key):
+    async def continue_channel(self, peer, cid, body, key, *, session=None):
         """Start or replay one requester round within the channel's original authority."""
         require(isinstance(body, str) and 0 < len(body.strip()) <= 16000, "invalid_body", "消息须为 1 至 16000 字符")
         require(isinstance(key, str) and 0 < len(key) <= 190, "invalid_key", "去重编号无效")
@@ -359,6 +364,7 @@ class Broker:
         c = self.channel(cid, peer)
         self.conversations.require_active(cid)
         require(c["requester"] == peer, "forbidden", "仅原任务发起端可以继续此任务")
+        self.bindings.require_session(c, peer, session)
         allowed = (c["approved_at"] is not None and c["expires"] > self.clock() and
                    (c["status"] == "active" or
                     (c["status"] == "closed" and c["idle_since"] is not None)))
@@ -375,7 +381,7 @@ class Broker:
                 'channel_unavailable', 'Authorization ended while checking the selected chat.')
         old = self.db.execute('SELECT 1 FROM messages WHERE sender=? AND client_key=?', (peer, client_key)).fetchone()
         if old:
-            return await self.continue_channel(peer, cid, body, key)
+            return await self.continue_channel(peer, cid, body, key, session=session)
         require(c["expires"] > self.clock(), "channel_unavailable", "任务授权已结束；不会重新打开、延长或替换此任务")
         with self.db:
             self.db.execute("UPDATE channels SET status='active', idle_since=NULL WHERE id=?", (cid,))
@@ -383,9 +389,10 @@ class Broker:
         await self.notify()
         return msg
 
-    async def finish(self, peer, cid):
+    async def finish(self, peer, cid, *, session=None):
         self.expire()
         c = self.channel(cid,peer)
+        self.bindings.require_session(c, peer, session)
         require(c["status"] == "active", "channel_unavailable", "通道未处于交流状态")
         pending = self.db.execute("SELECT 1 FROM messages WHERE channel=? AND kind='question' AND resolved=0", (cid,)).fetchone()
         require(not pending, "unanswered_questions", "仍有未完成求助，不能开始空闲关闭计时")
@@ -417,14 +424,16 @@ class Broker:
                 rows = self.db.execute("""SELECT m.* FROM messages m JOIN channels c ON c.id=m.channel
                     LEFT JOIN native_conversations n ON n.channel=c.id
                     LEFT JOIN task_targets t ON t.channel=c.id
+                    LEFT JOIN task_origins o ON o.channel=c.id
                     WHERE m.recipient=? AND m.seq>? AND (? IS NULL OR m.channel=?)
                     AND m.channel NOT IN (SELECT value FROM json_each(?))
                     AND (t.channel IS NULL OR m.recipient!=c.responder OR t.session=?)
+                    AND (o.channel IS NULL OR m.recipient!=c.requester OR o.session=?)
                     AND c.status='active' AND (m.recipient!=c.responder OR (
                         NOT EXISTS (SELECT 1 FROM native_archives a WHERE a.request_channel=c.id) AND
                         (COALESCE(json_extract(n.registration,'$.provider'),'')!='antigravity_sidecar' OR
                          (m.channel=? AND n.thread_id IS NOT NULL AND n.lifecycle='active'))))
-                    ORDER BY m.seq LIMIT 100""", (peer,after,cid,cid,json.dumps([b["channel"] for b in blocked]),session,cid)).fetchall()
+                    ORDER BY m.seq LIMIT 100""", (peer,after,cid,cid,json.dumps([b["channel"] for b in blocked]),session,session,cid)).fetchall()
                 if rows or blocked or (c and c["status"] not in ("active","pending")):
                     with self.db:
                         messages = [self.conversations.delivery(dict(r)) for r in rows]
@@ -445,10 +454,11 @@ class Broker:
                 except TimeoutError:
                     pass
 
-    def delegation_result(self, peer, cid):
+    def delegation_result(self, peer, cid, *, session=None):
         self.expire()
         c = self.channel(cid)
         require(c["requester"] == peer, "forbidden", "仅任务发起端点可以读取委派结果")
+        self.bindings.require_session(c, peer, session)
         result = {"state": c["status"], "channel": cid, **self._target_fields(cid)}
         binding = self.conversations.binding_request(cid)
         if binding is not None:
@@ -480,12 +490,14 @@ class Broker:
                 (cid, "initial:"+cid, peer, c["responder"])).fetchone()
             if row is not None:
                 result["answer"] = dict(row)
+                self._observe(peer, [row])  # a result read here is received: its chat is not woken for it
         return result
 
-    def round_result(self, peer, cid, question_id):
+    def round_result(self, peer, cid, question_id, *, session=None):
         self.expire()
         c = self.channel(cid, peer)
         require(c["requester"] == peer, "forbidden", "仅任务发起端可以读取续接结果")
+        self.bindings.require_session(c, peer, session)
         state = "expired" if c["status"] == "closed" and c["expires"] <= self.clock() else c["status"]
         if c["approved_at"] is None or state not in ("active", "closed") or c["expires"] <= self.clock():
             return {"state": state, "channel": cid, "question_id": question_id,
@@ -495,6 +507,8 @@ class Broker:
         require(question is not None, "not_found", "续接问题不存在")
         answer = self.db.execute("SELECT * FROM messages WHERE reply_to=? AND sender=? AND kind='answer'",
                                  (question_id, c["responder"])).fetchone()
+        if answer is not None:
+            self._observe(peer, [answer])
         pending = [dict(row) for row in self.db.execute(
             "SELECT * FROM messages WHERE channel=? AND sender=? AND kind='question' AND resolved=0 ORDER BY seq",
             (cid, c["responder"]))]

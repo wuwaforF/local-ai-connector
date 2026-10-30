@@ -30,6 +30,8 @@ SCHEMA = """
         channel TEXT PRIMARY KEY REFERENCES channels(id), endpoint TEXT NOT NULL,
         session TEXT NOT NULL, label TEXT NOT NULL, revision INTEGER NOT NULL,
         offered_at REAL NOT NULL, pinned_at REAL);
+    CREATE TABLE IF NOT EXISTS task_origins (
+        channel TEXT PRIMARY KEY REFERENCES channels(id), endpoint TEXT NOT NULL, session TEXT NOT NULL);
 """
 
 
@@ -272,8 +274,24 @@ class Bindings:
         self.db.execute("UPDATE task_targets SET pinned_at=? WHERE channel=? AND pinned_at IS NULL",
                         (self.clock(), channel))
 
+    # --- the chat that started a task ------------------------------------------------
+    def record_origin(self, channel: str, endpoint: str, session):
+        """Remember the chat that started a task, so its result goes back to that chat only."""
+        require(valid_session(session), "invalid_session", "The initiating chat identity is invalid.")
+        self.db.execute("INSERT INTO task_origins VALUES (?,?,?)", (channel, endpoint, session))
+
+    def origin(self, channel: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM task_origins WHERE channel=?", (channel,)).fetchone()
+        return dict(row) if row else None
+
     def require_session(self, channel: dict, peer: str, session):
-        """Only the pinned chat may act for the worker side of a pinned task."""
+        """Only the pinned chat may act for the worker side of a pinned task, and only the chat
+        that started a task may act for its requester side."""
+        if peer == channel["requester"]:
+            origin = self.origin(channel["id"])
+            require(origin is None or session == origin["session"], "wrong_session",
+                    "This task was started by another chat; only that chat can see its results.")
+            return
         if peer != channel["responder"]:
             return
         target = self.target(channel["id"])

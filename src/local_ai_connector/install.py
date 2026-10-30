@@ -150,28 +150,21 @@ def _entry_state(adapter, name: str, desired: dict, record: dict | None, env: Ho
     return "foreign"
 
 
-def _wake_binding(host: str, data: Path, ctx: Context, experimental: bool = False) -> dict:
-    """The wake-up binding setup owns for host: wake the chat each task was pinned to at approval.
-
-    experimental allows a platform where the bridge is implemented but not yet accepted on a real
-    desktop (Windows); the bridge is then told so in its own command line.
-    """
+def _wake_binding(host: str, data: Path, ctx: Context) -> dict:
+    """The wake-up binding setup owns for host: wake the chat each task was pinned to at approval."""
     spec = getattr(HOSTS[host], "WAKE", None)
     if spec is None:
         raise InstallError("wake_unsupported", f"{HOSTS[host].DISPLAY_NAME} has no automatic wake-up in this version.")
-    trial = ctx.platform not in spec["platforms"]
-    if trial and not (experimental and ctx.platform in spec.get("experimental_platforms", ())):
+    if ctx.platform not in spec["platforms"]:
         raise InstallError("wake_unsupported_platform",
-                           f"{HOSTS[host].DISPLAY_NAME} wake-up is available on macOS only in this version"
-                           + (" (on Windows, only as an experiment: --experimental-windows-wake)."
-                              if ctx.platform in spec.get("experimental_platforms", ()) else "."))
+                           f"{HOSTS[host].DISPLAY_NAME} wake-up is available on macOS and Windows only in this version.")
     bridge = SOURCE_ROOT.joinpath(*spec["bridge"])
     if not bridge.is_file():
         raise InstallError("wake_unavailable", f"The wake-up bridge is missing ({bridge}); run setup from a source "
                            "checkout of the connector.")
     state = ["--state-dir", str(data / spec["state_dir"])] if spec.get("state_dir") else []
     binding = {"adapter": "command", "target": "pinned", "timeout": 30, "restore": False,
-               "command": [ctx.runtime, str(bridge), *state, *(["--experimental-local-ipc"] if trial else [])]}
+               "command": [ctx.runtime, str(bridge), *state]}
     if ctx.platform in spec.get("credential_platforms", ()):
         binding["credential"] = "required"
     return binding
@@ -240,7 +233,7 @@ def _remove_tree(path: Path, wait: float = 10.0):
 
 
 def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dry_run: bool = False,
-          start_service: bool = True, wake: bool | None = None, experimental: bool = False) -> dict:
+          start_service: bool = True, wake: bool | None = None) -> dict:
     """wake: True turns automatic wake-up on, False turns it off and keeps it off on later runs, None uses the
     default: on wherever the host supports it, unless it was turned off before."""
     ctx = ctx or Context.current()
@@ -273,7 +266,7 @@ def setup(host: str, *, profile: str = "default", ctx: Context | None = None, dr
     wake_desired = None
     if wake or (wake is None and (wake_record or not opted_out)):
         try:
-            wake_desired = _wake_binding(host, data, ctx, experimental)
+            wake_desired = _wake_binding(host, data, ctx)
         except InstallError:
             if wake:
                 raise  # by default, setup goes on without wake-up where it is unavailable
@@ -363,17 +356,16 @@ def detect_hosts(ctx: Context | None = None) -> list[str]:
     return [name for name, adapter in HOSTS.items() if adapter.detect(ctx.host_env)]
 
 
-def _wake_available(host: str, data: Path, ctx: Context, experimental: bool = False) -> bool:
+def _wake_available(host: str, data: Path, ctx: Context) -> bool:
     try:
-        _wake_binding(host, data, ctx, experimental)
+        _wake_binding(host, data, ctx)
     except InstallError:
         return False
     return True
 
 
 def setup_many(hosts: list[str] | None = None, *, profile: str = "default", ctx: Context | None = None,
-               dry_run: bool = False, start_service: bool = True, wake: bool | None = None,
-               experimental: bool = False) -> dict:
+               dry_run: bool = False, start_service: bool = True, wake: bool | None = None) -> dict:
     """Set up several apps in one run (every supported app found, when none is named), then check readiness."""
     ctx = ctx or Context.current()
     hosts = list(dict.fromkeys(hosts or detect_hosts(ctx)))
@@ -385,12 +377,12 @@ def setup_many(hosts: list[str] | None = None, *, profile: str = "default", ctx:
         raise InstallError("unknown_host", f"Unknown app '{unknown[0]}'. Choose from: {', '.join(HOSTS)}.")
     if wake:
         data = profile_dir(profile, ctx)
-        missing = [HOSTS[host].DISPLAY_NAME for host in hosts if not _wake_available(host, data, ctx, experimental)]
+        missing = [HOSTS[host].DISPLAY_NAME for host in hosts if not _wake_available(host, data, ctx)]
         if missing:
             raise InstallError("wake_unsupported", f"Automatic wake-up is not available here for {', '.join(missing)}. "
                                "Nothing was changed; leave out --wake to set them up without it.")
-    setups = [setup(host, profile=profile, ctx=ctx, dry_run=dry_run, start_service=start_service, wake=wake,
-                    experimental=experimental) for host in hosts]
+    setups = [setup(host, profile=profile, ctx=ctx, dry_run=dry_run, start_service=start_service, wake=wake)
+              for host in hosts]
     return {"profile": profile, "dry_run": dry_run, "setups": setups,
             "doctor": None if dry_run else doctor(profile=profile, ctx=ctx)}
 

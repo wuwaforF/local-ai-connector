@@ -33,8 +33,17 @@ class Refused(Exception):
     """A request this platform or target cannot serve at all."""
 
 
+# Windows FILETIME counts 100 ns intervals from 1601-01-01; this many separate it from the Unix epoch.
+_FILETIME_UNIX_EPOCH = 116444736000000000
+
+
 def _started_at(text):
-    """Claude Code records procStart like "Sat Oct 24 15:30:23 2026", in UTC; None if it differs."""
+    """Claude Code's procStart in Unix seconds, None if unrecognized.
+
+    macOS records it like "Sat Oct 24 15:30:23 2026" (UTC); Windows records a FILETIME as decimal digits.
+    """
+    if isinstance(text, str) and text.isdecimal():
+        return (int(text) - _FILETIME_UNIX_EPOCH) / 10_000_000
     try:
         return float(calendar.timegm(time.strptime(text, "%a %b %d %H:%M:%S %Y")))
     except (TypeError, ValueError):
@@ -97,7 +106,7 @@ def _inbox(snapshot):
 def _auth_line(credential, snapshot):
     """The first line a Windows inbox requires: the bound chat's own token, as Claude Code documents it."""
     token = credential.get("token") if isinstance(credential, dict) else None
-    if not isinstance(token, str) or not 0 < len(token) <= 512 or "\n" in token or "\r" in token:
+    if not isinstance(token, str) or not token:
         raise Unavailable("Claude Code's Windows inbox needs the bound chat's own delivery token; the chat hands it "
                           "over when it next calls a connector tool")
     reported = credential.get("inbox")
@@ -192,11 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--session-record", type=Path, help="captured session record (fixed targets only)")
     parser.add_argument("--sessions-dir", type=Path, default=DEFAULT_SESSIONS,
                         help="Claude Code's registry of running sessions (pinned targets)")
-    parser.add_argument("--experimental-local-ipc", action="store_true",
-                        help="use local IPC where it is implemented but not yet accepted (setup --experimental-windows-wake)")
     args = parser.parse_args()
-    if args.experimental_local_ipc:
-        os_adapter.allow_experimental("local_ipc")
     try:
         response = handle(json.load(sys.stdin), args.session_record, args.sessions_dir)
     except (ValueError, UnicodeError):

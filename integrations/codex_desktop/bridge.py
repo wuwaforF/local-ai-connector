@@ -325,11 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     parser_ = argparse.ArgumentParser(description=__doc__)
     parser_.add_argument("--socket-path", type=Path, default=DEFAULT_SOCKET)
     parser_.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
-    parser_.add_argument("--experimental-local-ipc", action="store_true",
-                         help="use local IPC where it is implemented but not yet accepted (setup --experimental-windows-wake)")
     args = parser_.parse_args(argv)
-    if args.experimental_local_ipc:
-        os_adapter.allow_experimental("local_ipc")
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):

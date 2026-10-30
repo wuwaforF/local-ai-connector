@@ -119,6 +119,7 @@ host × OS implementations.
    off (owner decision, 2026-10-10; it was first adopted as an opt-in experiment). It relies on
    capability checks, and a host-version contract is still to come. A documented app-server
    `turn/start` is not evidence that it can wake a chat owned by the desktop app.
+   On Windows, wake-up for Codex and Claude is on by default too since 2026-10-30 (section 4.6).
 4. **Claude on Windows.** A session hook may hand the session's messaging token to the service,
    with these conditions:
    - It applies only to a target session the user explicitly enrolled.
@@ -285,6 +286,23 @@ answered `378`; B had no turn. Desktop started the turn about 6 s after the requ
 resuming a chat left idle overnight, so the bridge's 5 s acknowledgment wait recorded the send as
 `sent_unconfirmed`. The connector still observed A collect and answer the task and never resent.
 The start-turn wait is now 20 s, inside the connector's 30 s bridge timeout.
+
+### 4.6 Windows wake-up in both directions: reported working (2026-10-30)
+
+A run by an agent on the maintainer's Windows machine reported Codex Desktop and Claude Desktop Code
+waking each other's pinned chats, with its own variant of this code. No versions, timings or
+transcripts were recorded here. What it found is in this version:
+
+- Claude Code on Windows records `procStart` as a FILETIME in decimal digits, not a date string.
+- A long Codex chat's status snapshot exceeds the 1 MiB frame limit; snapshots may now be 8 MiB.
+- The chat that started a task is woken for its result, and only that chat can read the result.
+
+That variant read Claude's inbox token from a private file written by a command run in the chat.
+This version takes it from the chat's connector process and keeps it in memory (decision 4). The
+token is available on Windows (maintainer, 2026-10-30), and the connector process there receives
+Claude's session variables: binding the Claude chat in that run read `CLAUDE_CODE_SESSION_ID` from
+it. The token itself was seen in that process on macOS only; the first wake to Claude on Windows
+shows it. Without it, wakes wait with `wake_credential_missing` and tasks are collected when asked.
 
 ## 5. How support is reported
 

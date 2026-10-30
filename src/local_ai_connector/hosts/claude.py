@@ -27,9 +27,10 @@ PERMISSIONS = (
     "Allowing connector_receive, connector_send and connector_status without prompts is your choice; setup "
     "does not grant it.",
 )
-LIMITATIONS = ("On macOS, setup turns on automatic wake-up of the bound Claude Code chat through its session inbox (turn "
-               "it off with setup claude --no-wake). The chat must be running in Claude; Claude's own inbox settings can "
-               "hold or refuse the wake message. Elsewhere, the bound chat collects tasks when asked.",
+LIMITATIONS = ("On macOS and Windows, setup turns on automatic wake-up of the bound Claude Code chat through its session "
+               "inbox (turn it off with setup claude --no-wake). The chat must be running in Claude; Claude's own inbox "
+               "settings can hold or refuse the wake message. On Windows the chat first hands the connector its inbox "
+               "token, which it does on its first connector tool call. Elsewhere, the bound chat collects tasks when asked.",
                "A project's own .mcp.json server with the same name takes precedence inside that project; "
                "setup cannot see those files. Use --profile if you already have one.",
                "Chat identity relies on CLAUDE_CODE_SESSION_ID reaching the connector's MCP process; doctor and "
@@ -41,7 +42,7 @@ CLI_OVERRIDE = "LOCAL_AI_CONNECTOR_CLAUDE_CLI"
 # is handed over only where the inbox requires it.
 DELIVERY_ENV = {"token": "CLAUDE_CODE_MESSAGING_TOKEN", "inbox": "CLAUDE_CODE_MESSAGING_SOCKET", "platforms": ("win32",)}
 # On Windows the inbox accepts a connection only after the chat's own token (credential_platforms).
-WAKE = {"platforms": ("darwin",), "experimental_platforms": ("win32",), "credential_platforms": ("win32",),
+WAKE = {"platforms": ("darwin", "win32"), "credential_platforms": ("win32",),
         "bridge": ("integrations", "claude_code", "bridge.py")}
 
 

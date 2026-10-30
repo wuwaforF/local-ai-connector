@@ -402,6 +402,12 @@ def test_pinned_session_whose_pid_was_reused_is_skipped(registry):
     assert bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)["state"] == "idle"
 
 
+def test_process_start_is_read_in_the_macos_and_the_windows_registry_format():
+    assert bridge._started_at("Thu Jan  1 00:00:01 1970") == 1.0
+    assert bridge._started_at(str(116444736000000000 + 10_000_000)) == 1.0  # a Windows FILETIME
+    assert bridge._started_at("soon") is None and bridge._started_at(None) is None
+
+
 def test_unreadable_session_records_are_reported(registry):
     (registry.dir / "123.json").write_bytes(b"\xff\xfe not json")
     reply = bridge.handle(pinned_request(registry, "status"), sessions_dir=registry.dir)

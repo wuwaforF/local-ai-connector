@@ -339,3 +339,18 @@ def test_probe_fails_closed_when_owner_is_missing(monkeypatch, tmp_path):
 
     assert not connection.broadcasts
     assert connection.closed
+
+
+def test_a_long_chats_snapshot_over_one_megabyte_is_read_but_stays_bounded():
+    import io
+    import time
+    from types import SimpleNamespace
+
+    def connection(data):
+        return SimpleNamespace(recv=io.BytesIO(data).read, settimeout=lambda _: None)
+
+    big = framed({"type": "broadcast", "data": "x" * (1024 * 1024)})
+    assert status._read_message(connection(big), time.monotonic() + 5)["type"] == "broadcast"
+    oversized = (status.MAX_SNAPSHOT_FRAME_BYTES + 1).to_bytes(4, "little")
+    with pytest.raises(base_probe.ProbeError, match="oversized"):
+        status._read_message(connection(oversized), time.monotonic() + 5)

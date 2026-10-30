@@ -216,11 +216,11 @@ def create_app(data: Path):
             return await broker.open(peer,op.target,op.body,op.key,op.ttl_seconds,op.idle_seconds,op.conversation_mode,
                                      selected_conversation=op.selected_conversation, binding_only=op.binding_only,
                                      expected_revision=op.expected_revision, expected_label=op.expected_label,
-                                     require_target=op.require_target)
+                                     require_target=op.require_target, session=op.session)
         elif op.action == "archive_open":
             return await broker.archive_open(peer, op.channel, op.conversation_id, op.key)
         elif op.action == "continue":
-            return await broker.continue_channel(peer, op.channel, op.body, op.key)
+            return await broker.continue_channel(peer, op.channel, op.body, op.key, session=op.session)
         elif op.action == "send":
             return await broker.send(peer,op.channel,op.kind,op.body,op.key,op.reply_to,session=op.session)
         elif op.action == "receive":
@@ -232,11 +232,11 @@ def create_app(data: Path):
         elif op.action == "enroll":
             return broker.enroll(peer, op.session, op.secret, op.inbox)
         elif op.action == "finish":
-            return await broker.finish(peer,op.channel)
+            return await broker.finish(peer,op.channel,session=op.session)
         elif op.action == "result":
-            return broker.delegation_result(peer, op.channel)
+            return broker.delegation_result(peer, op.channel, session=op.session)
         elif op.action == "round_result":
-            return broker.round_result(peer, op.channel, op.question_id)
+            return broker.round_result(peer, op.channel, op.question_id, session=op.session)
         return broker.snapshot(peer, op.session)
 
     async def invoke(ctx, **payload):
