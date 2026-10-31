@@ -37,7 +37,7 @@ def test_setup_creates_a_private_installation_and_preserves_unrelated_configurat
     write(codex_file(ctx), CODEX_CONFIG)
     report = setup("codex", ctx=ctx, start_service=False)
     data = profile_dir("default", ctx)
-    wake = ["write_wake_config"] if ctx.platform == "darwin" else []  # on by default where Codex wake-up exists
+    wake = ["write_wake_config"] if ctx.platform in HOSTS["codex"].WAKE["platforms"] else []  # on by default there
     assert report["changed"] and [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry", *wake]
     text = codex_file(ctx).read_text()
     assert text.startswith(CODEX_CONFIG.rstrip("\n"))  # comments and other servers untouched
@@ -72,7 +72,7 @@ def test_dry_run_writes_nothing(tmp_path):
     ctx = context(tmp_path)
     write(codex_file(ctx), CODEX_CONFIG)
     report = setup("codex", ctx=ctx, dry_run=True)
-    wake = ["write_wake_config"] if ctx.platform == "darwin" else []
+    wake = ["write_wake_config"] if ctx.platform in HOSTS["codex"].WAKE["platforms"] else []
     assert [a["action"] for a in report["actions"]] == ["create_installation", "write_host_entry", *wake]
     assert codex_file(ctx).read_text() == CODEX_CONFIG
     assert not profile_dir("default", ctx).exists()
